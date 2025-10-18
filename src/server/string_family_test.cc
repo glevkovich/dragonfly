@@ -612,6 +612,199 @@ TEST_F(StringFamilyTest, GetDel) {
   ASSERT_THAT(resp, ArgType(RespExpr::NIL));
 }
 
+// Tests basic DELIFEQ behavior:
+// - deletes if value matches (returns 1)
+// - doesn't delete if value mismatches or key is missing (returns 0)
+// - returns WRONGTYPE error for non-string types. Also
+// - other edge cases: covers empty strings, large values, and special characters.
+TEST_F(StringFamilyTest, DelIfEqBasic) {
+  // Positive: Delete when value matches
+  ASSERT_EQ(Run({"set", "key", "abc123"}), "OK");
+  EXPECT_THAT(Run({"delifeq", "key", "abc123"}), IntArg(1));
+  EXPECT_THAT(Run({"get", "key"}), ArgType(RespExpr::NIL));
+
+  // Negative: Key was already deleted
+  EXPECT_THAT(Run({"delifeq", "key", "abc123"}), IntArg(0));
+
+  // Negative: Value mismatch, no delete
+  ASSERT_EQ(Run({"set", "key", "xyz789"}), "OK");
+  EXPECT_THAT(Run({"delifeq", "key", "abc123"}), IntArg(0));
+  EXPECT_EQ(Run({"get", "key"}), "xyz789");
+
+  // Negative: Key does not exist
+  EXPECT_THAT(Run({"delifeq", "nonexistent_key", "value"}), IntArg(0));
+
+  // Error: Set type, should return WRONGTYPE
+  ASSERT_THAT(Run({"sadd", "setkey", "member"}), IntArg(1));
+  EXPECT_THAT(Run({"delifeq", "setkey", "member"}), ErrArg("WRONGTYPE"));
+
+  // Error: List type, should return WRONGTYPE
+  Run({"lpush", "listkey", "item"});
+  EXPECT_THAT(Run({"delifeq", "listkey", "item"}), ErrArg("WRONGTYPE"));
+
+  // Edge: Empty string value matches and deletes
+  ASSERT_EQ(Run({"set", "empty_key", ""}), "OK");
+  EXPECT_THAT(Run({"delifeq", "empty_key", ""}), IntArg(1));
+  EXPECT_THAT(Run({"get", "empty_key"}), ArgType(RespExpr::NIL));
+
+  // Edge: Empty string value mismatch, does not delete
+  ASSERT_EQ(Run({"set", "empty_key2", ""}), "OK");
+  EXPECT_THAT(Run({"delifeq", "empty_key2", "nonempty_key"}), IntArg(0));
+  EXPECT_EQ(Run({"get", "empty_key2"}), "");
+
+  // Edge: Large value test
+  std::string large_val(10000, 'x');
+  ASSERT_EQ(Run({"set", "large_key", large_val}), "OK");
+  EXPECT_THAT(Run({"delifeq", "large_key", large_val}), IntArg(1));
+  EXPECT_THAT(Run({"get", "large_key"}), ArgType(RespExpr::NIL));
+
+  // Edge: Special chars test
+  std::string special_val = "Line1\nLine2\t\u2603";
+  ASSERT_EQ(Run({"set", "special_key", special_val}), "OK");
+  EXPECT_THAT(Run({"delifeq", "special_key", special_val}), IntArg(1));
+  EXPECT_THAT(Run({"get", "special_key"}), ArgType(RespExpr::NIL));
+}
+
+// Test atomicity: concurrent DELIFEQ and GET on the same key should yield consistent state
+// "key", if exist, must be val1 or val2
+TEST_F(StringFamilyTest, DelIfEqConcurrencyRandomized) {
+  Run({"set", "key", "val1"});
+  std::mt19937_64 rng{123};
+  std::uniform_int_distribution<int> op{0, 4};
+
+  auto worker = [&] {
+    for (int i = 0; i < 1000; ++i) {
+      switch (op(rng)) {
+        case 0:
+          Run({"set", "key", "val1"});
+          break;
+        case 1:
+          Run({"set", "key", "val2"});
+          break;
+        case 2:
+          Run({"delifeq", "key", "val1"});
+          break;
+        case 3:
+          Run({"delifeq", "key", "val2"});
+          break;
+        case 4: {
+          auto r = Run({"get", "key"});
+          ASSERT_TRUE(r.type == RespExpr::NIL || r == "val1" || r == "val2");
+          break;
+        }
+      }
+    }
+  };
+
+  auto fb0 = pp_->at(0)->LaunchFiber(worker);
+  auto fb1 = pp_->at(1)->LaunchFiber(worker);
+
+  fb0.Join();
+  fb1.Join();
+}
+
+// Test that repeated DELIFEQ and SET operations on the same key remain atomic under contention.
+// Two fibers race 1000 times:
+// - One continually attempts DELIFEQ(racekey, "initial")
+// - The other continually sets racekey to "initial"
+// After the race, the key must be either absent (NIL) or hold the value "initial".
+TEST_F(StringFamilyTest, DelIfEqSetRace) {
+  Run({"set", "racekey", "initial"});
+
+  auto delifeq_fb = pp_->at(0)->LaunchFiber([&] {
+    for (size_t i = 0; i < 1000; ++i) {
+      Run({"delifeq", "racekey", "initial"});
+    }
+  });
+
+  auto set_fb = pp_->at(1)->LaunchFiber([&] {
+    for (size_t i = 0; i < 1000; ++i) {
+      Run({"set", "racekey", "initial"});
+    }
+  });
+
+  delifeq_fb.Join();
+  set_fb.Join();
+
+  // Key may exist or not after race, but should be consistent ("initial" or NIL).
+  auto resp = Run({"get", "racekey"});
+  EXPECT_THAT(resp, AnyOf(ArgType(RespExpr::NIL), Eq("initial")));
+}
+
+// Test that DELIFEQ functions correctly with very large string values.
+// Tests both:
+// - Successful deletion when the stored value exactly matches the large input string.
+// - No deletion when the provided comparison value mismatches the large stored string.
+// Ensures the command handles large payloads atomically and correctly without corrupting storage or
+// state.
+TEST_F(StringFamilyTest, DelIfEqLargeValue) {
+  const std::string large_val(10000, 'x');
+  ASSERT_EQ(Run({"set", "largekey", large_val}), "OK");
+  EXPECT_THAT(Run({"delifeq", "largekey", large_val}), IntArg(1));
+  EXPECT_THAT(Run({"get", "largekey"}), ArgType(RespExpr::NIL));
+
+  // Mismatch on large value, should not delete
+  ASSERT_EQ(Run({"set", "largekey2", large_val}), "OK");
+  EXPECT_THAT(Run({"delifeq", "largekey2", "largekey3"}), IntArg(0));
+  EXPECT_EQ(Run({"get", "largekey2"}), large_val);
+}
+
+// Test that DELIFEQ correctly handles values containing special characters, Unicode text, and
+// binary data including embedded null bytes. The test ensures DELIFEQ can match and delete keys
+// holding:
+// - Strings with control characters like newlines and tabs
+// - Unicode characters that may be multi-byte encoded
+// - Binary data with embedded nulls, which require exact byte-wise matching
+// This confirms the command's robustness for arbitrary data and proper handling of complex string
+// inputs.
+TEST_F(StringFamilyTest, DelIfEqSpecialChars) {
+  ASSERT_EQ(Run({"set", "special_chars_str", "hello\nworld\ttab"}), "OK");
+  EXPECT_THAT(Run({"delifeq", "special_chars_str", "hello\nworld\ttab"}), IntArg(1));
+
+  ASSERT_EQ(Run({"set", "unicode_str", "こんにちは"}), "OK");
+  EXPECT_THAT(Run({"delifeq", "unicode_str", "こんにちは"}), IntArg(1));
+
+  string binary_data = string("binary\0data", 11);
+  ASSERT_EQ(Run({"set", "binary_data", binary_data}), "OK");
+  EXPECT_THAT(Run({"delifeq", "binary_data", binary_data}), IntArg(1));
+}
+
+// Tests that DELIFEQ invocation records a mutation event for
+// successful deletes and mismatches, but not for missing keys.
+// Sets up two keys, then calls DELIFEQ three times:
+//   1) Successful delete (should mutate)
+//   2) Value mismatch (should mutate)
+//   3) Key missing (should NOT mutate)
+// Verifies the mutation counter behavior per call.
+TEST_F(StringFamilyTest, DelIfEqMetricsPerCall) {
+  Run({"set", "m1", "v1"});
+  Run({"set", "m2", "v2"});
+
+  // 1) Successful delete
+  {
+    auto before = GetMetrics().events.mutations;
+    EXPECT_THAT(Run({"delifeq", "m1", "v1"}), IntArg(1));
+    auto after = GetMetrics().events.mutations;
+    EXPECT_GT(after, before) << "DELIFEQ(m1, v1) should record a mutation event";
+  }
+
+  // 2) Value mismatch
+  {
+    auto before = GetMetrics().events.mutations;
+    EXPECT_THAT(Run({"delifeq", "m2", "wrong"}), IntArg(0));
+    auto after = GetMetrics().events.mutations;
+    EXPECT_GT(after, before) << "DELIFEQ(m2, wrong) should record a mutation event";
+  }
+
+  // 3) Key missing
+  {
+    auto before = GetMetrics().events.mutations;
+    EXPECT_THAT(Run({"delifeq", "m3", "v3"}), IntArg(0));
+    auto after = GetMetrics().events.mutations;
+    EXPECT_EQ(after, before) << "DELIFEQ(m3, v3) should not record a mutation event";
+  }
+}
+
 TEST_F(StringFamilyTest, GetEx) {
   auto resp = Run({"set", "foo", "bar"});
   EXPECT_THAT(resp, "OK");

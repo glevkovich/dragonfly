@@ -28,6 +28,7 @@ class StringFamily {
   static void DecrBy(CmdArgList args, const CommandContext& cmnd_cntx);
   static void Get(CmdArgList args, const CommandContext& cmnd_cntx);
   static void GetDel(CmdArgList args, const CommandContext& cmnd_cntx);
+  static void DelIfEq(CmdArgList args, const CommandContext& cmnd_cntx);
   static void GetRange(CmdArgList args, const CommandContext& cmnd_cntx);
   static void GetSet(CmdArgList args, const CommandContext& cmnd_cntx);
   static void GetEx(CmdArgList args, const CommandContext& cmnd_cntx);

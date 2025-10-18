@@ -1156,6 +1156,50 @@ void StringFamily::GetDel(CmdArgList args, const CommandContext& cmnd_cntx) {
   GetReplies{cmnd_cntx.rb}.Send(cmnd_cntx.tx->ScheduleSingleHopT(cb));
 }
 
+void StringFamily::DelIfEq(CmdArgList args, const CommandContext& cmnd_cntx) {
+  DCHECK_GE(args.size(), 2U);
+  std::string key{ArgS(args, 0)};
+  std::string cmp_value{ArgS(args, 1)};
+
+  auto cb = [key = std::move(key), cmp_value = std::move(cmp_value)](
+                Transaction* tx, EngineShard* es) -> OpResult<int> {
+    auto& db_slice = tx->GetDbSlice(es->shard_id());
+    auto it_res = db_slice.FindMutable(tx->GetDbContext(), key, OBJ_STRING);
+    if (!it_res.ok()) {
+      auto status = it_res.status();
+      if (status == OpStatus::KEY_NOTFOUND)
+        return 0;     // key does not exist, nothing deleted
+      return status;  // propagate other errors like WRONG_TYPE
+    }
+
+    auto value_variant = ReadString(tx->GetDbIndex(), key, it_res->it->second, es);
+    if (auto value_ptr = std::get_if<std::string>(&value_variant)) {
+      if (*value_ptr != cmp_value)
+        return 0;  // value mismatch
+    } else {
+      // At this stage, the key passed the initial OBJ_STRING type check, but the actual
+      // stored value variant is not a plain std::string. This scenario can occur when
+      // the value is a deferred, external, or tiered representation returned by ReadString().
+      // Such values cannot be compared or deleted directly, so we treat them as non‑string
+      // variants and return WRONG_TYPE to be consistent with other string commands.
+      return OpStatus::WRONG_TYPE;  // not a string
+    }
+
+    db_slice.DelMutable(tx->GetDbContext(), std::move(*it_res));
+    return 1;
+  };
+
+  auto result = cmnd_cntx.tx->ScheduleSingleHopT(cb);
+  if (!result.ok()) {
+    if (result.status() == OpStatus::WRONG_TYPE)
+      cmnd_cntx.rb->SendError(kWrongTypeErr);
+    else
+      cmnd_cntx.rb->SendError(result.status());
+  } else {
+    cmnd_cntx.rb->SendLong(result.value());
+  }
+}
+
 void StringFamily::GetSet(CmdArgList args, const CommandContext& cmnd_cntx) {
   string_view key = ArgS(args, 0);
   string_view value = ArgS(args, 1);
@@ -1688,6 +1732,7 @@ void StringFamily::Register(CommandRegistry* registry) {
       << CI{"DECRBY", CO::WRITE | CO::FAST, 3, 1, 1}.HFUNC(DecrBy)
       << CI{"GET", CO::READONLY | CO::FAST, 2, 1, 1}.HFUNC(Get)
       << CI{"GETDEL", CO::WRITE | CO::FAST, 2, 1, 1}.HFUNC(GetDel)
+      << CI{"DELIFEQ", CO::WRITE | CO::FAST, 3, 1, 1}.HFUNC(DelIfEq)
       << CI{"GETEX", CO::WRITE | CO::DENYOOM | CO::FAST | CO::NO_AUTOJOURNAL, -2, 1, 1}.HFUNC(GetEx)
       << CI{"GETSET", CO::WRITE | CO::DENYOOM | CO::FAST, 3, 1, 1}.HFUNC(GetSet)
       << CI{"MGET", CO::READONLY | CO::FAST | CO::IDEMPOTENT, -2, 1, -1}.HFUNC(MGet)

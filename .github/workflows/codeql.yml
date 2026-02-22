@@ -1,0 +1,60 @@
+name: "CodeQL Security Scan"
+
+on:
+  schedule:
+    - cron: '0 4 * * 0' # Run at 4 AM UTC every Sunday (Tier 3 Weekly)
+  workflow_dispatch: # Allows you to trigger it manually on your fork
+
+permissions:
+  contents: read
+  security-events: write # Strictly required to upload CodeQL SARIF to GitHub Security tab
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    # Matching the exact Dragonfly dev container and security options
+    container:
+      image: ghcr.io/romange/ubuntu-dev:24
+      options: --security-opt seccomp=unconfined --sysctl "net.ipv6.conf.all.disable_ipv6=0"
+      credentials:
+        username: ${{ github.repository_owner }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: cpp
+          queries: security-extended
+
+      - name: Configure & Build
+        run: |
+          # Using your native blaze script to configure, followed by the ninja build
+          # CodeQL automatically wraps the compiler during this step to build its DB
+          ./helio/blaze.sh -clang -release -DDFLY_USE_SSL=ON
+          ninja -C clang-opt dragonfly
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:cpp"
+
+      - name: Send notification on failure
+        if: failure() && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          job_link="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          message="CodeQL Security Scan failed.\\n Commit: ${{github.sha}}\\n Job Link: ${job_link}\\n"
+
+          curl -s \
+            -X POST \
+            -H 'Content-Type: application/json' \
+            '${{ secrets.GSPACES_BOT_DF_BUILD }}' \
+            -d '{"text": "'"${message}"'"}'

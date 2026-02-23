@@ -43,7 +43,7 @@ jobs:
       # This hides the ghost TryCompile files from the CodeQL tracer.
       # ------------------------------------------------------------------
       - name: Configure Dragonfly
-        run: ./helio/blaze.sh -clang -release -DDFLY_USE_SSL=ON
+        run: ./helio/blaze.sh -clang -release -DDFLY_USE_SSL=ON && echo "compile_commands.json:" && cat clang-opt/compile_commands.json
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4

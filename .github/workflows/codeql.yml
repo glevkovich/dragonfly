@@ -2,19 +2,18 @@ name: "CodeQL Security Scan"
 
 on:
   schedule:
-    - cron: '0 4 * * 0' # Run at 4 AM UTC every Sunday (Tier 3 Weekly)
-  workflow_dispatch: # Allows you to trigger it manually on your fork
+    - cron: '0 4 * * 0' # 4 AM UTC on Sundays
+  workflow_dispatch:
 
 permissions:
   contents: read
-  security-events: write # Strictly required to upload CodeQL SARIF to GitHub Security tab
+  security-events: write
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 120
 
-    # Matching the exact Dragonfly dev container and security options
     container:
       image: ghcr.io/romange/ubuntu-dev:24
       options: --security-opt seccomp=unconfined --sysctl "net.ipv6.conf.all.disable_ipv6=0"
@@ -28,21 +27,45 @@ jobs:
         with:
           submodules: true
 
+      - name: Fix Git Dubious Ownership
+        # Required because the runner checks out code as the GitHub user,
+        # but the container runs as root. This stops the CodeQL Git error.
+        run: git config --global --add safe.directory '*'
+
+      - name: Cache build deps and ccache
+        # Mirrors the caching strategy from your team's cov.yml
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.ccache
+            ${{github.workspace}}/clang-opt/_deps
+          key: ${{ runner.os }}-codeql-deps-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-codeql-deps-
+
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: cpp
           queries: security-extended
+          # This is the CodeQL equivalent of your CodeChecker skipfile!
+          # It filters out all the AWS/Abseil noise from the final report.
+          config: |
+            paths-ignore:
+              - '**/clang-opt/**'
+              - '**/build-dbg/**'
+              - '**/third_party/**'
+              - '**/_deps/**'
+              - '**/genfiles/**'
 
       - name: Configure & Build
         run: |
-          # Using your native blaze script to configure, followed by the ninja build
-          # CodeQL automatically wraps the compiler during this step to build its DB
           ./helio/blaze.sh -clang -release -DDFLY_USE_SSL=ON
+          # Building only the dragonfly target saves time
           ninja -C clang-opt dragonfly
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
         with:
           category: "/language:cpp"
 
@@ -52,7 +75,6 @@ jobs:
         run: |
           job_link="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           message="CodeQL Security Scan failed.\\n Commit: ${{github.sha}}\\n Job Link: ${job_link}\\n"
-
           curl -s \
             -X POST \
             -H 'Content-Type: application/json' \

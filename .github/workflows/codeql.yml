@@ -1,8 +1,6 @@
-name: "CodeQL Security Scan"
+name: "CodeQL Security Scan (Fast Test)"
 
 on:
-  #schedule:
-  #  - cron: '0 4 * * 0'
   workflow_dispatch:
 
 permissions:
@@ -28,12 +26,9 @@ jobs:
           submodules: true
 
       - name: Fix Git Dubious Ownership
-        # Required because the runner checks out code as the GitHub user,
-        # but the container runs as root. This stops the CodeQL Git error.
         run: git config --global --add safe.directory '*'
 
       - name: Cache build deps and ccache
-        # Mirrors the caching strategy from your team's cov.yml
         uses: actions/cache@v4
         with:
           path: |
@@ -43,13 +38,21 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-codeql-deps-
 
+      # ------------------------------------------------------------------
+      # LAYER 1 (THE SQUEEZE): Run blaze.sh BEFORE CodeQL initializes
+      # This hides the ghost TryCompile files from the CodeQL tracer.
+      # ------------------------------------------------------------------
+      - name: Configure Dragonfly
+        run: ./helio/blaze.sh -clang -release -DDFLY_USE_SSL=ON
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
           languages: cpp
-          # 1. UPGRADED to the strictest built-in suite
-          # 2. INCLUDED your new custom queries folder
-          queries: security-and-quality, ./.github/custom-queries
+          # FASTER TESTING: We removed `security-and-quality`.
+          # Now it ONLY runs your custom query folder!
+          queries: ./.github/custom-queries
+          # LAYER 2: Ignore 3rd party paths
           config: |
             paths-ignore:
               - '**/clang-opt/**'
@@ -58,12 +61,27 @@ jobs:
               - '**/_deps/**'
               - '**/genfiles/**'
 
-      - name: Configure & Build
-        run: |
-          ./helio/blaze.sh -clang -release -DDFLY_USE_SSL=ON
-          ninja -C clang-opt dragonfly
+      # ------------------------------------------------------------------
+      # THE MICRO-BUILD: Instead of patching compile_commands.json, we
+      # specifically build ONLY the object file containing your intentional
+      # bug. CodeQL will only scan this file, saving ~45 minutes.
+      # ------------------------------------------------------------------
+      - name: Build Single Target
+        run: ninja -C clang-opt src/facade/CMakeFiles/dfly_facade.dir/dragonfly_connection.cc.o
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:
           category: "/language:cpp"
+
+      - name: Send notification on failure
+        if: failure() && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          job_link="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          message="CodeQL Security Scan failed.\\n Commit: ${{github.sha}}\\n Job Link: ${job_link}\\n"
+          curl -s \
+            -X POST \
+            -H 'Content-Type: application/json' \
+            '${{ secrets.GSPACES_BOT_DF_BUILD }}' \
+            -d '{"text": "'"${message}"'"}'

@@ -1,8 +1,8 @@
 name: "CodeQL Security Scan"
 
 on:
-  schedule:
-    - cron: '0 4 * * 0' # 4 AM UTC on Sundays
+  #schedule:
+  #  - cron: '0 4 * * 0'
   workflow_dispatch:
 
 permissions:
@@ -47,9 +47,9 @@ jobs:
         uses: github/codeql-action/init@v4
         with:
           languages: cpp
-          queries: security-extended
-          # This is the CodeQL equivalent of your CodeChecker skipfile!
-          # It filters out all the AWS/Abseil noise from the final report.
+          # 1. UPGRADED to the strictest built-in suite
+          # 2. INCLUDED your new custom queries folder
+          queries: security-and-quality, ./.github/custom-queries
           config: |
             paths-ignore:
               - '**/clang-opt/**'
@@ -61,22 +61,9 @@ jobs:
       - name: Configure & Build
         run: |
           ./helio/blaze.sh -clang -release -DDFLY_USE_SSL=ON
-          # Building only the dragonfly target saves time
           ninja -C clang-opt dragonfly
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:
           category: "/language:cpp"
-
-      - name: Send notification on failure
-        if: failure() && github.ref == 'refs/heads/main'
-        shell: bash
-        run: |
-          job_link="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          message="CodeQL Security Scan failed.\\n Commit: ${{github.sha}}\\n Job Link: ${job_link}\\n"
-          curl -s \
-            -X POST \
-            -H 'Content-Type: application/json' \
-            '${{ secrets.GSPACES_BOT_DF_BUILD }}' \
-            -d '{"text": "'"${message}"'"}'

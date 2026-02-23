@@ -66,9 +66,10 @@ jobs:
       # specifically build ONLY the object file containing your intentional
       # bug. CodeQL will only scan this file, saving ~45 minutes.
       # ------------------------------------------------------------------
-      - name: Build Single Target
-        run: ninja -C clang-opt src/facade/CMakeFiles/dfly_facade.dir/dragonfly_connection.cc.o
-
+      # - name: Build Single Target
+      #   run: ninja -C clang-opt src/facade/CMakeFiles/dfly_facade.dir/dragonfly_connection.cc.o
+      - name: Build Dragonfly (Full Production Scan)
+        run: ninja -C clang-opt dragonfly
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:

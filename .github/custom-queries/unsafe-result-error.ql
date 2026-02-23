@@ -1,6 +1,6 @@
 /**
- * @name Unsafe error() access on Result type
- * @description Accessing .error() when the Result might actually be in a success state (e.g., guarded by an OR condition).
+ * @name Unsafe error() access after OR condition
+ * @description Accessing .error() inside a block guarded by an || condition, meaning it might be a success state.
  * @kind problem
  * @problem.severity error
  * @id cpp/unsafe-result-error-access
@@ -8,13 +8,15 @@
 
 import cpp
 
-from FunctionCall call, LogicalOrExpr orExpr
+from FunctionCall call, IfStmt ifStmt
 where
-  // 1. We are calling a method named "error"
+  // 1. Look for any function/method call named "error"
   call.getTarget().getName() = "error" and
-  // 2. The object we are calling it on has "Result" in its class name
-  call.getTarget().getDeclaringType().getName().matches("%Result%") and
-  // 3. The call happens inside a block that is guarded by a Logical OR (||)
-  // which means the condition might have been true because of a success path!
-  call.getEnclosingStmt().getParentStmt*() = orExpr.getEnclosingStmt()
-select call, "Unsafe access: .error() called inside a block guarded by an || condition. The result might be a success!"
+
+  // 2. Ensure this call happens somewhere inside the "then" branch of an if-statement
+  call.getEnclosingStmt().getParentStmt*() = ifStmt.getThen() and
+
+  // 3. Ensure that if-statement's condition contains an || (Logical OR)
+  ifStmt.getCondition().getAChild*() instanceof LogicalOrExpr
+
+select call, "Intentional Bug: .error() called inside an || block. It might be a success state!"

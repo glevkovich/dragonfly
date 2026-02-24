@@ -65,16 +65,32 @@ jobs:
       # THE MICRO-BUILD: Instead of patching compile_commands.json, we
       # specifically build ONLY the object file containing your intentional
       # bug. CodeQL will only scan this file, saving ~45 minutes.
-      # ------------------------------------------------------------------
-      # - name: Build Single Target
-      #   run: ninja -C clang-opt src/facade/CMakeFiles/dfly_facade.dir/dragonfly_connection.cc.o
+
       - name: Build Dragonfly (Full Production Scan)
         run: ninja -C clang-opt dragonfly
+
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:
           category: "/language:cpp"
+          upload: false
+          output: sarif-results
 
+      - name: Filter out 3rd party noise from SARIF
+        uses: advanced-security/filter-sarif@v1
+        with:
+          patterns: |
+            -**/clang-opt/**
+            -**/third_party/**
+            -**/_deps/**
+          input: sarif-results/cpp.sarif
+          output: sarif-results/cpp.sarif
+
+      - name: Upload filtered results to GitHub
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          # 4. Upload the clean, filtered file
+          sarif_file: sarif-results/cpp.sarif
       - name: Send notification on failure
         if: failure() && github.ref == 'refs/heads/main'
         shell: bash

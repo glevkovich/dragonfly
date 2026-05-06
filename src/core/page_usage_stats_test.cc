@@ -2,8 +2,6 @@
 // See LICENSE for licensing terms.
 //
 
-#include "core/page_usage/page_usage_stats.h"
-
 #include <absl/flags/reflection.h>
 #include <gmock/gmock-matchers.h>
 
@@ -12,6 +10,7 @@
 #include "base/gtest.h"
 #include "base/logging.h"
 #include "core/compact_object.h"
+#include "core/page_usage/page_usage_dispatch.h"
 #include "core/qlist.h"
 #include "core/score_map.h"
 #include "core/search/block_list.h"

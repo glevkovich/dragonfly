@@ -6,8 +6,6 @@
 
 #include <absl/container/flat_hash_map.h>
 #include <absl/container/flat_hash_set.h>
-
-#define MI_BUILD_RELEASE 1
 #include <mimalloc/types.h>
 
 #include <functional>
@@ -17,7 +15,12 @@
 #include <vector>
 
 #include "core/page_usage/page_usage_stats.h"
-#include "server/table.h"
+
+extern "C" {
+#include "redis/zmalloc.h"
+mi_page_usage_stats_t mi_heap_page_is_underutilized(mi_heap_t* heap, void* p, float ratio,
+                                                    bool collect_stats);
+}
 
 namespace dfly {
 
@@ -411,8 +414,10 @@ class CensusTaker final : public PageUsage {
  public:
   CensusTaker(PageCensus* census, float threshold, CycleQuota quota = CycleQuota::Unlimited());
 
-  bool IsPageForObjectUnderUtilized(void* object) final;
-  bool IsPageForObjectUnderUtilized(mi_heap_t* heap, void* object) final;
+  // Non-virtual; called from the tagged-dispatch switch in page_usage_dispatch.h
+  // (where the inline bodies live so defrag.h does not need mimalloc/internal.h).
+  bool IsPageForObjectUnderUtilizedImpl(void* object);
+  bool IsPageForObjectUnderUtilizedImpl(mi_heap_t* heap, void* object);
 
   bool IsReadOnly() const final {
     return true;
@@ -433,8 +438,10 @@ class Evacuator final : public PageUsage {
   Evacuator(TargetPlan* plan, float threshold, EvacStats* evac_stats,
             CycleQuota quota = CycleQuota::Unlimited());
 
-  bool IsPageForObjectUnderUtilized(void* object) final;
-  bool IsPageForObjectUnderUtilized(mi_heap_t* heap, void* object) final;
+  // Non-virtual; called from the tagged-dispatch switch in page_usage_dispatch.h
+  // (where the inline bodies live so defrag.h does not need mimalloc/internal.h).
+  bool IsPageForObjectUnderUtilizedImpl(void* object);
+  bool IsPageForObjectUnderUtilizedImpl(mi_heap_t* heap, void* object);
 
   bool ShouldStop() const final {
     return plan_->AllTargetsDone();

@@ -877,20 +877,7 @@ CycleProgress RunVerify(const TargetPlan& plan) {
 
 CensusTaker::CensusTaker(PageCensus* census, float threshold, CycleQuota quota)
     : PageUsage(CollectPageStats::NO, threshold, quota), census_(census), threshold_(threshold) {
-}
-
-bool CensusTaker::IsPageForObjectUnderUtilized(void* object) {
-  mi_page_usage_stats_t stat = mi_heap_page_is_underutilized(
-      static_cast<mi_heap_t*>(zmalloc_heap), object, threshold_, /*collect_stats=*/true);
-  census_->Observe(stat, current_cursor_);
-  return false;
-}
-
-bool CensusTaker::IsPageForObjectUnderUtilized(mi_heap_t* heap, void* object) {
-  mi_page_usage_stats_t stat =
-      mi_heap_page_is_underutilized(heap, object, threshold_, /*collect_stats=*/true);
-  census_->Observe(stat, current_cursor_);
-  return false;
+  kind_ = Kind::kCensus;
 }
 
 Evacuator::Evacuator(TargetPlan* plan, float threshold, EvacStats* evac_stats, CycleQuota quota)
@@ -898,30 +885,7 @@ Evacuator::Evacuator(TargetPlan* plan, float threshold, EvacStats* evac_stats, C
       plan_(plan),
       threshold_(threshold),
       evac_stats_(evac_stats) {
-}
-
-bool Evacuator::IsPageForObjectUnderUtilized(void* object) {
-  const uintptr_t addr = reinterpret_cast<uintptr_t>(_mi_ptr_page(object));
-  TargetPage* target = plan_->FindMut(addr);
-  if (target == nullptr) {
-    ++evac_stats_->blocks_skipped_not_target;
-    return false;
-  }
-  const mi_page_usage_stats_t stat = mi_heap_page_is_underutilized(
-      static_cast<mi_heap_t*>(zmalloc_heap), object, threshold_, /*collect_stats=*/true);
-  return EvacDecide(*plan_, target, stat, *evac_stats_) == EvacOutcome::kCommitMove;
-}
-
-bool Evacuator::IsPageForObjectUnderUtilized(mi_heap_t* heap, void* object) {
-  const uintptr_t addr = reinterpret_cast<uintptr_t>(_mi_ptr_page(object));
-  TargetPage* target = plan_->FindMut(addr);
-  if (target == nullptr) {
-    ++evac_stats_->blocks_skipped_not_target;
-    return false;
-  }
-  const mi_page_usage_stats_t stat =
-      mi_heap_page_is_underutilized(heap, object, threshold_, /*collect_stats=*/true);
-  return EvacDecide(*plan_, target, stat, *evac_stats_) == EvacOutcome::kCommitMove;
+  kind_ = Kind::kEvacuator;
 }
 
 void DefragIdleStep(DefragTaskState* state, float threshold) {

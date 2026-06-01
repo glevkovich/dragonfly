@@ -808,6 +808,7 @@ void Connection::OnPostMigrateThread() {
     MaybeEnableRecvMultishot();
     socket_->RegisterOnRecv([this](const FiberSocketBase::RecvNotification& n) {
       NotifyOnRecv(n);
+      // EagerParse();
       io_event_.notify();
     });
   }
@@ -2889,6 +2890,108 @@ void Connection::NotifyOnRecv(const util::FiberSocketBase::RecvNotification& n) 
   }
 }
 
+void Connection::EagerParse() {
+  // Task 4 (Eager Parsing): turn the bytes that just arrived into ParsedCommand objects
+  // *inside* the proactor callback, so the V2 fiber wakes to a ready-to-execute queue and
+  // skips the read→parse step on its next iteration.
+  //
+  // Safety contract:
+  //   - Runs in proactor callback context (NOT a fiber). Must NEVER call Yield/Wait/Sleep
+  //     or any blocking I/O.
+  //   - V2-only. V1's AsyncFiber owns the parser; eagerly parsing would race with it.
+  //   - Only safe when the fiber is parked in the await block (phase_ == READ_SOCKET).
+  //     If the fiber is in PROCESS phase, it may be mid-parse (ParseRedis) and yielded
+  //     due to max_busy_cycles. Parsing here would corrupt redis_parser_/io_buf_ state.
+  //
+  // Added results to rager parsing - with and without, see 2 logs, done on AWS cross machines.
+  // =========================================================================
+  // KNOWN BUGS AND REQUIRED FIXES (if this function is ever re-enabled)
+  // =========================================================================
+  //
+  // BUG 1: Missing command quota — proactor starvation.
+  //   ParseRedis is called with max_busy_cycles=UINT_MAX, disabling its internal
+  //   preemption check. If io_buf_ contains thousands of small commands (e.g. 10K PINGs
+  //   packed into 64KB), this callback monopolizes the proactor event loop for hundreds
+  //   of microseconds, starving all other connections on the same thread.
+  //   FIX: Add a hard command count quota (e.g. 64–128 commands per callback invocation).
+  //   Track parsed_cmd_q_len_ delta before/after the parse call and stop early:
+  //     uint32_t parsed_before = parsed_cmd_q_len_;
+  //     ParseRedis(...);
+  //     // Next callback invocation will continue if io_buf_ still has data.
+  //   The quota should be a compile-time constant or a flag, similar to async_dispatch_quota.
+  //   ParseMCBatch already caps at 128 — Redis needs the same treatment.
+  //
+  // BUG 2: phase_ == READ_SOCKET is an insufficient guard — causes ZADD/multi-shard collapse.
+  //   The guard `phase_ == READ_SOCKET` was designed to prevent running the parser while the
+  //   fiber is mid-parse (PROCESS phase, yielded due to max_busy_cycles). It does that correctly.
+  //   However, phase_ is also set to READ_SOCKET when the fiber parks at io_event_.await()
+  //   waiting for an in-flight async command to complete (e.g. ZADD waiting on run_barrier_).
+  //   In that state, eagerly parsing more commands is harmful: the fiber can't execute them
+  //   any faster because execution is serialized behind the in-flight head command. The parsed
+  //   queue grows unboundedly → hits backpressure limit → thrashes → 92% RPS collapse on ZADD.
+  //   FIX: Add an explicit in-flight check before parsing:
+  //     if (HasInFlightCommands() && !parsed_head_->CanReply()) return;
+  //   This distinguishes "idle, waiting for network" (safe to parse) from "blocked, waiting
+  //   for shard completion" (harmful to parse).
+  //
+  // ARCHITECTURAL LIMITATION: Even with both bugs fixed, benchmarks show zero net benefit.
+  //   The cooperative scheduler means the callback can only fire when the fiber has already
+  //   yielded — either because it's truly idle (State A: waiting for data) or blocked on I/O
+  //   (State B: waiting for sendmsg completion via fc.Get(), ~5–20μs window).
+  //   - In State A (idle): The fiber wakes immediately after the callback returns and would
+  //     have parsed the same bytes itself with better cache locality (no context switch cost).
+  //     Measured: -8% RPS regression at p=1 throughput.
+  //   - In State B (sendmsg blocked): The overlap window is 5–20μs — barely enough to parse
+  //     a handful of commands. Cache-locality penalty of switching from fiber→callback→fiber
+  //     context likely exceeds the parse time saved. Measured: ~neutral at p≥10.
+  //   The only way eager parsing provides real parallelism is with a dedicated reader OS thread
+  //   (V1's IoLoop fiber model) or io_uring buffer rings (Task 9) where the kernel manages
+  //   buffer lifetime, enabling true zero-copy concurrent parsing.
+  // =========================================================================
+
+  if (!ioloop_v2_)
+    return;
+
+  if (phase_ != READ_SOCKET)
+    return;
+
+  if (io_ec_)
+    return;
+
+  // Epoll path: NotifyOnRecv only set pending_input_; the data sits in the kernel socket
+  // buffer, not in io_buf_. Drain it now with non-blocking TryRecv (safe in callback).
+  // Uring multishot path: NotifyOnRecv already wrote into io_buf_, so pending_input_ stays
+  // unchanged and this branch is skipped.
+  if (pending_input_ && io_buf_.InputLen() == 0) {
+    ReadPendingInput();
+    if (io_ec_)
+      return;
+  }
+
+  if (io_buf_.InputLen() == 0)
+    return;
+
+  // Backpressure: do not grow the parsed queue past the per-thread memory limit.
+  // Connections with an empty queue are exempt so admin commands (CONFIG SET) can still
+  // execute and relieve pressure.
+  QueueBackpressure& qbp = GetQueueBackpressure();
+  if ((parsed_cmd_q_len_ > 0) &&
+      qbp.IsPipelineBufferOverLimit(GetLocalConnStats().pipeline_queue_bytes, parsed_cmd_q_len_)) {
+    return;
+  }
+
+  // Passing UINT_MAX as max_busy_cycles disables the periodic ThisFiber::Yield() inside
+  // ParseRedis — which would crash if invoked from a non-fiber callback context. The
+  // per-callback work is naturally bounded by io_buf_'s size and ParseRedis's internal
+  // backpressure check (in enqueue_only mode).
+  if (protocol_ == Protocol::REDIS) {
+    ParseRedis(io_buf_, std::numeric_limits<unsigned>::max(), true /* enqueue_only */);
+  } else if (protocol_ == Protocol::MEMCACHE) {
+    // ParseMCBatch caps itself at 128 commands per call.
+    ParseMCBatch(io_buf_);
+  }
+}
+
 void Connection::ReadPendingInput() {
   // Drain available socket data into io_buf_.
   io::MutableBytes buf = io_buf_.AppendBuffer();
@@ -2988,6 +3091,7 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoopV2() {
   peer->RegisterOnRecv([this](const FiberSocketBase::RecvNotification& n) {
     DVLOG(2) << "Calling DoReadOnRecv iobuf_len: " << io_buf_.InputLen();
     NotifyOnRecv(n);
+    // EagerParse();
     io_event_.notify();
   });
 

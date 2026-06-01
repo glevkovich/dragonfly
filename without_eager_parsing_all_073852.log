@@ -1,0 +1,958 @@
+
+############## Run 1 / 5 ##############
+
+>>> Starting Dragonfly [V1] mode=throughput (io_loop_v2=false)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=false --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=1 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=10 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=100 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=500 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+
+=====================================================
+  V1    throughput  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         124394.46  0.42488      1500000        1.0
+10        271286.25  1.84539      160646         9.3
+100       312171.18  15.95811     18346          81.8
+500       369553.34  76.24782     4812           311.7
+=====================================================
+
+>>> Starting Dragonfly [V2] mode=throughput (io_loop_v2=true)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=true --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=1 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=10 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=100 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=500 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+
+=====================================================
+  V2    throughput  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         88352.10   0.56369      1500000        1.0
+10        222787.21  2.24573      253656         5.9
+100       275306.04  19.91945     28036          53.5
+500       303455.26  97.65784     5590           268.3
+=====================================================
+
+>>> Starting Dragonfly [V1] mode=fragmentation (io_loop_v2=false)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=false --bind=0.0.0.0 --port=6379 --admin_port=8099 --max_busy_read_usec=50000
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=1 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=10 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=100 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=500 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+
+=====================================================
+  V1    fragmentation  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         5046.47    0.19827      30000          1.0
+10        31714.25   0.31448      5592           5.4
+100       114405.13  0.85527      565            53.1
+500       171298.38  2.81095      65             461.5
+=====================================================
+
+>>> Starting Dragonfly [V2] mode=fragmentation (io_loop_v2=true)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=true --bind=0.0.0.0 --port=6379 --admin_port=8099 --max_busy_read_usec=50000
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=1 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=10 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=100 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=500 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+
+=====================================================
+  V2    fragmentation  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         4782.34    0.20943      30000          1.0
+10        33964.58   0.29352      9143           3.3
+100       118201.91  0.83342      3488           8.6
+500       156588.46  3.09865      944            31.8
+=====================================================
+
+>>> Starting Dragonfly [V1] mode=zadd (io_loop_v2=false)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=false --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=1 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=10 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=100 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=500 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+
+=====================================================
+  V1    zadd  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         160323.52  0.35912      1500000        1.0
+10        100165.41  6.46998      150153         10.0
+100       296739.07  16.32453     29958          50.1
+500       273299.31  91.50568     24945          60.1
+=====================================================
+
+>>> Starting Dragonfly [V2] mode=zadd (io_loop_v2=true)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=true --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=1 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=10 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=100 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=500 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+
+=====================================================
+  V2    zadd  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         109483.19  0.46236      1500000        1.0
+10        65510.72   7.74088      150389         10.0
+100       510594.32  9.54258      30200          49.7
+500       450386.07  55.07420     25550          58.7
+=====================================================
+
+>>> Starting Dragonfly [V1] mode=pubsub (io_loop_v2=false)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=false --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 1 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=10, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 10 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=100, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 100 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=500, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 500 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+
+=====================================================
+  V1    pubsub  (commit: 715ebbfc)
+=====================================================
+PIPELINE  PUB_RPS    SEND_SYSCALLS  SUBSCRIBERS
+1         16134.24   396816         10
+10        116009.28  32896          10
+100       263157.91  4223           10
+500       239234.44  3980           10
+=====================================================
+
+>>> Starting Dragonfly [V2] mode=pubsub (io_loop_v2=true)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=true --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 1 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=10, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 10 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=100, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 100 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=500, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 500 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+
+=====================================================
+  V2    pubsub  (commit: 715ebbfc)
+=====================================================
+PIPELINE  PUB_RPS    SEND_SYSCALLS  SUBSCRIBERS
+1         15253.20   426271         10
+10        107991.36  48541          10
+100       261780.11  4306           10
+500       263157.91  4251           10
+=====================================================
+
+############## Run 2 / 5 ##############
+
+>>> Starting Dragonfly [V1] mode=throughput (io_loop_v2=false)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=false --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=1 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=10 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=100 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=500 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+
+=====================================================
+  V1    throughput  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         122984.21  0.43780      1500000        1.0
+10        265928.36  1.87930      161526         9.3
+100       352538.12  16.27864     18492          81.1
+500       284752.80  89.32776     4422           339.2
+=====================================================
+
+>>> Starting Dragonfly [V2] mode=throughput (io_loop_v2=true)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=true --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=1 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=10 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=100 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=500 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+
+=====================================================
+  V2    throughput  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         95565.80   0.53807      1500000        1.0
+10        227974.44  2.18701      258090         5.8
+100       291337.88  18.49577     27983          53.6
+500       317259.35  91.89666     5684           263.9
+=====================================================
+
+>>> Starting Dragonfly [V1] mode=fragmentation (io_loop_v2=false)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=false --bind=0.0.0.0 --port=6379 --admin_port=8099 --max_busy_read_usec=50000
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=1 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=10 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=100 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=500 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+
+=====================================================
+  V1    fragmentation  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         4987.55    0.20079      30000          1.0
+10        33214.02   0.30025      5838           5.1
+100       106983.15  0.91444      401            74.8
+500       152383.27  3.17018      100            300.0
+=====================================================
+
+>>> Starting Dragonfly [V2] mode=fragmentation (io_loop_v2=true)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=true --bind=0.0.0.0 --port=6379 --admin_port=8099 --max_busy_read_usec=50000
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=1 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=10 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=100 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=500 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+
+=====================================================
+  V2    fragmentation  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         4758.49    0.21044      30000          1.0
+10        35902.13   0.27772      9471           3.2
+100       113427.12  0.86851      3305           9.1
+500       148648.78  3.26160      792            37.9
+=====================================================
+
+>>> Starting Dragonfly [V1] mode=zadd (io_loop_v2=false)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=false --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=1 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=10 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=100 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=500 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+
+=====================================================
+  V1    zadd  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         150881.02  0.36465      1500000        1.0
+10        102654.09  6.52614      150141         10.0
+100       319050.57  15.48425     29972          50.0
+500       340589.63  72.71981     24825          60.4
+=====================================================
+
+>>> Starting Dragonfly [V2] mode=zadd (io_loop_v2=true)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=true --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=1 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=10 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=100 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=500 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+
+=====================================================
+  V2    zadd  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         113258.21  0.46413      1500000        1.0
+10        66561.50   7.83654      150508         10.0
+100       521591.63  9.44896      30201          49.7
+500       473118.66  52.19355     25550          58.7
+=====================================================
+
+>>> Starting Dragonfly [V1] mode=pubsub (io_loop_v2=false)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=false --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 1 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=10, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 10 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=100, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 100 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=500, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 500 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+
+=====================================================
+  V1    pubsub  (commit: 715ebbfc)
+=====================================================
+PIPELINE  PUB_RPS    SEND_SYSCALLS  SUBSCRIBERS
+1         15867.98   391901         10
+10        118764.84  34091          10
+100       260416.67  3975           10
+500       247524.75  3830           10
+=====================================================
+
+>>> Starting Dragonfly [V2] mode=pubsub (io_loop_v2=true)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=true --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 1 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=10, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 10 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=100, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 100 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=500, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 500 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+
+=====================================================
+  V2    pubsub  (commit: 715ebbfc)
+=====================================================
+PIPELINE  PUB_RPS    SEND_SYSCALLS  SUBSCRIBERS
+1         15384.62   436026         10
+10        114155.25  44811          10
+100       265957.47  4251           10
+500       260416.67  4151           10
+=====================================================
+
+############## Run 3 / 5 ##############
+
+>>> Starting Dragonfly [V1] mode=throughput (io_loop_v2=false)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=false --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=1 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=10 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=100 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=500 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+
+=====================================================
+  V1    throughput  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         121421.32  0.42825      1500000        1.0
+10        273139.76  1.82344      159690         9.4
+100       313671.63  15.89181     18119          82.8
+500       414783.78  73.94483     4973           301.6
+=====================================================
+
+>>> Starting Dragonfly [V2] mode=throughput (io_loop_v2=true)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=true --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=1 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=10 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=100 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=500 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+
+=====================================================
+  V2    throughput  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         85894.70   0.58177      1500000        1.0
+10        223492.12  2.23461      254438         5.9
+100       254009.50  19.64790     27992          53.6
+500       277571.81  96.48670     5546           270.5
+=====================================================
+
+>>> Starting Dragonfly [V1] mode=fragmentation (io_loop_v2=false)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=false --bind=0.0.0.0 --port=6379 --admin_port=8099 --max_busy_read_usec=50000
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=1 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=10 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=100 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=500 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+
+=====================================================
+  V1    fragmentation  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         4861.79    0.20599      30000          1.0
+10        34012.68   0.29305      5187           5.8
+100       113143.08  0.86462      332            90.4
+500       154177.44  3.13745      112            267.9
+=====================================================
+
+>>> Starting Dragonfly [V2] mode=fragmentation (io_loop_v2=true)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=true --bind=0.0.0.0 --port=6379 --admin_port=8099 --max_busy_read_usec=50000
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=1 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=10 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=100 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=500 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+
+=====================================================
+  V2    fragmentation  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         4767.73    0.21006      30000          1.0
+10        34751.99   0.28686      9152           3.3
+100       130245.08  0.75675      2691           11.1
+500       138089.12  3.54098      639            46.9
+=====================================================
+
+>>> Starting Dragonfly [V1] mode=zadd (io_loop_v2=false)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=false --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=1 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=10 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=100 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=500 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+
+=====================================================
+  V1    zadd  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         152217.04  0.35587      1500000        1.0
+10        97864.12   6.60722      150117         10.0
+100       343021.64  14.50404     29939          50.1
+500       319125.78  78.93616     25009          60.0
+=====================================================
+
+>>> Starting Dragonfly [V2] mode=zadd (io_loop_v2=true)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=true --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=1 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=10 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=100 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=500 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+
+=====================================================
+  V2    zadd  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         113134.46  0.46688      1500000        1.0
+10        64514.79   8.05889      150419         10.0
+100       521001.39  9.46991      30200          49.7
+500       460364.04  53.92811     25565          58.7
+=====================================================
+
+>>> Starting Dragonfly [V1] mode=pubsub (io_loop_v2=false)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=false --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 1 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=10, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 10 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=100, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 100 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=500, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 500 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+
+=====================================================
+  V1    pubsub  (commit: 715ebbfc)
+=====================================================
+PIPELINE  PUB_RPS    SEND_SYSCALLS  SUBSCRIBERS
+1         15812.78   412316         10
+10        120192.30  33246          10
+100       267379.66  4211           10
+500       246305.42  4084           10
+=====================================================
+
+>>> Starting Dragonfly [V2] mode=pubsub (io_loop_v2=true)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=true --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 1 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=10, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 10 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=100, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 100 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=500, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 500 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+
+=====================================================
+  V2    pubsub  (commit: 715ebbfc)
+=====================================================
+PIPELINE  PUB_RPS    SEND_SYSCALLS  SUBSCRIBERS
+1         15948.96   442276         10
+10        111111.12  48386          10
+100       270270.28  4451           10
+500       267379.66  4276           10
+=====================================================
+
+############## Run 4 / 5 ##############
+
+>>> Starting Dragonfly [V1] mode=throughput (io_loop_v2=false)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=false --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=1 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=10 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=100 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=500 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+
+=====================================================
+  V1    throughput  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         122019.60  0.43624      1500000        1.0
+10        272205.23  1.83120      160081         9.4
+100       321519.35  15.51166     18740          80.0
+500       287427.19  83.02254     4922           304.8
+=====================================================
+
+>>> Starting Dragonfly [V2] mode=throughput (io_loop_v2=true)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=true --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=1 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=10 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=100 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=500 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+
+=====================================================
+  V2    throughput  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         93064.87   0.55530      1500000        1.0
+10        223788.41  2.23383      254076         5.9
+100       265833.06  19.63185     28064          53.4
+500       287062.61  95.41199     5567           269.4
+=====================================================
+
+>>> Starting Dragonfly [V1] mode=fragmentation (io_loop_v2=false)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=false --bind=0.0.0.0 --port=6379 --admin_port=8099 --max_busy_read_usec=50000
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=1 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=10 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=100 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=500 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+
+=====================================================
+  V1    fragmentation  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         4887.22    0.20475      30000          1.0
+10        33334.44   0.29892      4900           6.1
+100       99613.83   0.98533      564            53.2
+500       178853.55  2.68902      66             454.5
+=====================================================
+
+>>> Starting Dragonfly [V2] mode=fragmentation (io_loop_v2=true)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=true --bind=0.0.0.0 --port=6379 --admin_port=8099 --max_busy_read_usec=50000
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=1 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=10 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=100 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=500 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+
+=====================================================
+  V2    fragmentation  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         4619.56    0.21667      30000          1.0
+10        37010.03   0.26944      9820           3.1
+100       121883.84  0.80881      4297           7.0
+500       150735.59  3.21613      674            44.5
+=====================================================
+
+>>> Starting Dragonfly [V1] mode=zadd (io_loop_v2=false)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=false --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=1 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=10 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=100 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=500 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+
+=====================================================
+  V1    zadd  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         141314.19  0.38087      1500000        1.0
+10        106359.91  6.39756      150115         10.0
+100       309536.45  15.36700     29942          50.1
+500       318084.57  77.79227     25004          60.0
+=====================================================
+
+>>> Starting Dragonfly [V2] mode=zadd (io_loop_v2=true)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=true --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=1 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=10 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=100 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=500 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+
+=====================================================
+  V2    zadd  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         116140.95  0.44866      1500000        1.0
+10        67562.65   7.92634      150317         10.0
+100       527542.28  9.41724      30200          49.7
+500       471745.14  52.52868     25581          58.6
+=====================================================
+
+>>> Starting Dragonfly [V1] mode=pubsub (io_loop_v2=false)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=false --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 1 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=10, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 10 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=100, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 100 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=500, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 500 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+
+=====================================================
+  V1    pubsub  (commit: 715ebbfc)
+=====================================================
+PIPELINE  PUB_RPS    SEND_SYSCALLS  SUBSCRIBERS
+1         16072.00   422016         10
+10        123762.38  32811          10
+100       257731.95  4037           10
+500       248756.22  3989           10
+=====================================================
+
+>>> Starting Dragonfly [V2] mode=pubsub (io_loop_v2=true)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=true --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 1 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=10, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 10 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=100, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 100 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=500, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 500 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+
+=====================================================
+  V2    pubsub  (commit: 715ebbfc)
+=====================================================
+PIPELINE  PUB_RPS    SEND_SYSCALLS  SUBSCRIBERS
+1         15309.25   444666         10
+10        110619.47  46486          10
+100       270270.28  4481           10
+500       273224.03  4146           10
+=====================================================
+
+############## Run 5 / 5 ##############
+
+>>> Starting Dragonfly [V1] mode=throughput (io_loop_v2=false)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=false --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=1 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=10 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=100 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=500 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+
+=====================================================
+  V1    throughput  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         118487.63  0.43719      1500000        1.0
+10        266580.22  1.87314      159095         9.4
+100       314231.28  15.91211     19071          78.7
+500       631588.79  82.73011     4798           312.6
+=====================================================
+
+>>> Starting Dragonfly [V2] mode=throughput (io_loop_v2=true)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=true --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=1 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=10 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=100 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=500 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+
+=====================================================
+  V2    throughput  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         88024.61   0.60061      1500000        1.0
+10        218611.95  2.28250      251727         6.0
+100       261276.16  20.61694     27873          53.8
+500       233949.29  106.25418    5587           268.5
+=====================================================
+
+>>> Starting Dragonfly [V1] mode=fragmentation (io_loop_v2=false)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=false --bind=0.0.0.0 --port=6379 --admin_port=8099 --max_busy_read_usec=50000
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=1 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=10 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=100 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=500 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+
+=====================================================
+  V1    fragmentation  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         4794.10    0.20839      30000          1.0
+10        32904.55   0.30310      5810           5.2
+100       114858.91  0.85125      492            61.0
+500       169144.64  2.85961      122            245.9
+=====================================================
+
+>>> Starting Dragonfly [V2] mode=fragmentation (io_loop_v2=true)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=true --bind=0.0.0.0 --port=6379 --admin_port=8099 --max_busy_read_usec=50000
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=1 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=10 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=100 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 1 -c 1 --pipeline=500 --ratio=1:0 -d 2048 --key-pattern=R:R --key-prefix=bench -n 30000 --hide-histogram
+
+=====================================================
+  V2    fragmentation  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         4731.39    0.21147      30000          1.0
+10        35623.19   0.27989      9336           3.2
+100       115190.56  0.85436      3027           9.9
+500       135577.29  3.60242      981            30.6
+=====================================================
+
+>>> Starting Dragonfly [V1] mode=zadd (io_loop_v2=false)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=false --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=1 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=10 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=100 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=500 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+
+=====================================================
+  V1    zadd  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         152927.24  0.36960      1500000        1.0
+10        92680.17   6.74122      150143         10.0
+100       302543.67  16.21436     29822          50.3
+500       288444.62  86.66525     24861          60.3
+=====================================================
+
+>>> Starting Dragonfly [V2] mode=zadd (io_loop_v2=true)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=true --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=1 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=10 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=10 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=100 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=100 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+  [+] pipeline=500 ...
+  [client cmd] ssh ubuntu@172.31.20.3 memtier_benchmark -s 172.31.30.209 -p 6379 -t 2 -c 25 --pipeline=500 --key-prefix=bench -n 30000 --hide-histogram --command=ZADD __key__ 1 __data__ --command-key-pattern=R -d 32
+
+=====================================================
+  V2    zadd  (commit: 715ebbfc)
+=====================================================
+PIPELINE  RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1         100962.97  0.49619      1500000        1.0
+10        65626.81   7.76236      150459         10.0
+100       504663.60  9.79359      30200          49.7
+500       445158.94  55.66709     25563          58.7
+=====================================================
+
+>>> Starting Dragonfly [V1] mode=pubsub (io_loop_v2=false)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=false --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 1 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=10, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 10 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=100, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 100 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=500, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 500 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+
+=====================================================
+  V1    pubsub  (commit: 715ebbfc)
+=====================================================
+PIPELINE  PUB_RPS    SEND_SYSCALLS  SUBSCRIBERS
+1         15994.88   410266         10
+10        120481.93  32608          10
+100       255102.05  4022           10
+500       236966.83  4266           10
+=====================================================
+
+>>> Starting Dragonfly [V2] mode=pubsub (io_loop_v2=true)
+  [server cmd] ./build-opt/dragonfly --proactor_threads=2 --enable_resp_io_loop_v2=true --bind=0.0.0.0 --port=6379 --admin_port=8099
+  [+] pipeline=1, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 1 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=10, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 10 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=100, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 100 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+  [+] pipeline=500, subscribers=10 ...
+  [client sub cmd x10] ssh ubuntu@172.31.20.3 redis-cli -h 172.31.30.209 -p 6379 SUBSCRIBE bench_chan
+  [client pub cmd] ssh ubuntu@172.31.20.3 timeout 60 redis-benchmark -h 172.31.30.209 -p 6379 -n 50000 -P 500 -c 5 -q publish bench_chan 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+
+=====================================================
+  V2    pubsub  (commit: 715ebbfc)
+=====================================================
+PIPELINE  PUB_RPS    SEND_SYSCALLS  SUBSCRIBERS
+1         15494.27   440051         10
+10        116009.28  46631          10
+100       265957.47  4576           10
+500       270270.28  4376           10
+=====================================================
+
+======================================================
+  MEDIAN RESULTS (5 runs, commit: 715ebbfc)
+======================================================
+  V1    throughput
+=====================================================
+PIPELINE                                               RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1                                                      122019.60  0.43624      1500000        1.0
+10                                                     271286.25  1.84539      160208         9.4
+100                                                    314231.28  15.91211     18554          81.1
+500                                                    369553.34  82.73011     4785           311.7
+=====================================================
+  V2    throughput
+=====================================================
+PIPELINE                                               RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1                                                      88352.10   0.56369      1500000        1.0
+10                                                     223492.12  2.23461      254397         5.9
+100                                                    265833.06  19.64790     27990          53.6
+500                                                    287062.61  96.48670     5595           268.5
+=====================================================
+  V1    fragmentation
+=====================================================
+PIPELINE                                               RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1                                                      4887.22    0.20475      30000          1.0
+10                                                     33214.02   0.30025      5465           5.4
+100                                                    113143.08  0.86462      471            61.0
+500                                                    169144.64  2.85961      93             300.0
+=====================================================
+  V2    fragmentation
+=====================================================
+PIPELINE                                               RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1                                                      4758.49    0.21044      30000          1.0
+10                                                     35623.19   0.27989      9384           3.2
+100                                                    118201.91  0.83342      3362           9.1
+500                                                    148648.78  3.26160      806            37.9
+=====================================================
+  V1    zadd
+=====================================================
+PIPELINE                                               RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1                                                      152217.04  0.36465      1500000        1.0
+10                                                     100165.41  6.52614      150134         10.0
+100                                                    309536.45  15.48425     29927          50.1
+500                                                    318084.57  78.93616     24929          60.1
+=====================================================
+  V2    zadd
+=====================================================
+PIPELINE                                               RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1                                                      113134.46  0.46413      1500000        1.0
+10                                                     65626.81   7.83654      150418         10.0
+100                                                    521001.39  9.46991      30200          49.7
+500                                                    460364.04  53.92811     25562          58.7
+=====================================================
+  V1    pubsub
+=====================================================
+PIPELINE                                               RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1                                                      15994.88   0.00000      406663         0.0
+10                                                     120192.30  0.00000      33130          0.0
+100                                                    260416.67  0.00000      4094           0.0
+500                                                    246305.42  0.00000      4030           0.0
+=====================================================
+  V2    pubsub
+=====================================================
+PIPELINE                                               RPS        AVG_LAT(ms)  SEND_SYSCALLS  BATCH_DENSITY
+1                                                      15384.62   0.00000      437858         0.0
+10                                                     111111.12  0.00000      46971          0.0
+100                                                    265957.47  0.00000      4413           0.0
+500                                                    267379.66  0.00000      4240           0.0
+=====================================================

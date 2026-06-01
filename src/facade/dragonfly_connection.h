@@ -347,6 +347,12 @@ class Connection : public util::Connection {
 
   void NotifyOnRecv(const util::FiberSocketBase::RecvNotification& n);
 
+  // Eagerly parses bytes from io_buf_ into ParsedCommand objects from the proactor
+  // callback context (Task 4). Must NOT yield, suspend, or perform blocking I/O.
+  // Safe because callback runs on the same thread as the V2 fiber and only fires
+  // while the fiber is suspended (cooperative scheduling).
+  void EagerParse();
+
   // Enables io_uring multishot receives for the connection if the current thread supports it.
   // This is required during initial setup or after migrating to a new thread/proactor,
   // provided the buffer ring is configured and the connection is not using TLS.

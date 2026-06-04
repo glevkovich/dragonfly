@@ -3076,6 +3076,7 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoopV2() {
   // detect preemptions that occurred anywhere during the previous work phase,
   // including paths that `continue` back without reaching the loop bottom.
   uint64_t epoch_at_process = fb2::FiberSwitchEpoch();
+  uint32_t cmds_since_idle = 0;
 
   do {
     stats_v2_.loop_iterations++;
@@ -3131,6 +3132,17 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoopV2() {
       // back here with HasCommandToExecute() == true. Skipping the flush lets the
       // entire pipeline execute in-memory before a single sendmsg at the end.
       if (!should_wake()) {
+        // When a pipeline burst is in-flight (cmds_since_idle > 1), yield once to let
+        // the proactor process pending I/O completions. If new data arrives during the
+        // yield, skip the flush and continue processing. Skip for single commands (p=1)
+        // where no follow-up data is expected - the yield would just add latency.
+        if (cmds_since_idle > 1) {
+          ThisFiber::Yield();
+          if (should_wake()) {
+            continue;
+          }
+        }
+
         phase_ = READ_SOCKET;
 
         // Flush replies deferred by ReplyBatch before sleeping - ensures the client
@@ -3142,6 +3154,7 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoopV2() {
 
         stats_v2_.idle_awaits++;
         io_event_.await(should_wake);
+        cmds_since_idle = 0;
       }
     }
 
@@ -3193,7 +3206,9 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoopV2() {
       // reply.
       size_t mem_before = conn_stats.pipeline_queue_bytes;
       stats_v2_.parse_calls_fiber++;
+      uint32_t cmds_before = local_stats_.cmds;
       parse_status = ParseLoop();
+      cmds_since_idle += local_stats_.cmds - cmds_before;
 
       // Executing and replying to commands (in ParseLoop()) frees up memory. Because those internal
       // functions only wake up this specific connection, we need to manually notify

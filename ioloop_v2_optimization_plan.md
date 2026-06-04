@@ -77,7 +77,7 @@ below).
 | 10 | [Deferred Fan-Out Batching (Pubsub p=1)](#task-10-deferred-fan-out-batching-pubsub-p1--p2) | 2 | P2 — Important | Medium | Medium | Task 5 merged | — | TODO |
 | ~~11~~ | ~~[V2 Subscriber-Side Reply Batching (SetBatchMode in ProcessControlMessages)](#task-11-v2-subscriber-side-reply-batching-setbatchmode-in-processcontrolmessages--merged)~~ | ~~1~~ | ~~P2 — Important~~ | ~~Low~~ | ~~Small~~ | ~~None~~ | ~~[#7479](https://github.com/dragonflydb/dragonfly/pull/7479)~~ | **MERGED** |
 | 12 | [TLS Support for IoLoopV2 (MC + RESP)](#task-12-tls-support-for-ioloopv2--p1-required) | 4 | P1 — Required | High | Large | None | — | TODO |
-| 13 | [Conditional SquashPipeline for V2](#task-13-conditional-squashpipeline-for-v2--p2-conditional) | 4 | P2 — Conditional | Medium | Medium | M2 benchmarks | — | TODO |
+| ~~13~~ | ~~[Conditional SquashPipeline for V2](#task-13-conditional-squashpipeline-for-v2--cancelled)~~ | ~~4~~ | ~~P2 — Conditional~~ | ~~Medium~~ | ~~Medium~~ | ~~M2 benchmarks~~ | — | **CANCELLED** |
 | **14** | **[Fiber-Level Time Profiling (Measure Before Optimize)](#task-14-fiber-level-time-profiling-measure-before-optimize--p0-next)** | **2** | **P0 — NEXT** | **Low** | **Small–Medium** | **None** | — | **TODO** |
 | ~~15~~ | ~~[Idle-Flush Coalescing Delay (`pipeline_wait_batch_usec` for V2)](#task-15-idle-flush-coalescing-delay-pipeline_wait_batch_usec-for-v2--cancelled)~~ | ~~2~~ | ~~P2 — Experiment~~ | ~~Low~~ | ~~Trivial~~ | ~~Task 14 data~~ | — | **CANCELLED** |
 | ~~16~~ | ~~[Transactional-Command Reply-Flush Coalescing (ZADD `batched_=false`)](#task-16-transactional-command-reply-flush-coalescing-zadd-batched_false--cancelled)~~ | ~~2~~ | ~~P3 — Low~~ | ~~Low~~ | ~~Small~~ | ~~Task 14 data~~ | — | **CANCELLED** |
@@ -727,7 +727,6 @@ Low. The `absl::Cleanup` pattern already guards batch mode in `ReplyBatch()` and
 | Task | Description | Effort |
 |------|-------------|--------|
 | **Task 12** | TLS support for IoLoopV2 — required for both MC and RESP | Large |
-| **Task 13** | Conditional SquashPipeline for V2 — only if M2 ZADD benchmarks show significant regression | Medium |
 
 ### Measurement
 
@@ -737,8 +736,7 @@ After each phase, re-run `bench_v2.sh` with all modes. Targets:
 - **Phase 2:** V2 throughput RPS matches V1 at p=1 (currently ~30% lower, 44K vs 64K RPS).
 - **Phase 3:** Memory per connection drops significantly; V2 matches or exceeds V1 across all
   benchmarks.
-- **Phase 4:** TLS connections can use IoLoopV2; sync-heavy pipelines (ZADD) within acceptable
-  regression threshold vs V1 (or SquashPipeline ported if not).
+- **Phase 4:** TLS connections can use IoLoopV2.
 
 ---
 
@@ -775,33 +773,17 @@ with helio's `TlsSocket` abstraction.
 
 ---
 
-## Task 13: Conditional SquashPipeline for V2 — P2 (Conditional)
+## ~~Task 13: Conditional SquashPipeline for V2 — CANCELLED~~
 
-### Summary
-
-V1's `SquashPipeline()` aggressively batches execution of pipelined commands that don't
-support async dispatch (e.g., ZADD, SADD, sorted set operations). V2 currently processes
-these one-at-a-time via `ExecuteBatch()`. If M2 cloud benchmarks show significant regression
-for these workloads, we need a V2 equivalent.
-
-### Status: CONDITIONAL ON M2 BENCHMARK RESULTS
-
-Do not implement until the M2 ZADD cloud benchmark (Epic #6006, Milestone 2 sub-issue 3)
-quantifies the actual regression. If V2 is within acceptable bounds (e.g., <10% slower),
-the complexity may not be justified — V2's deferred flushing already provides some natural
-batching.
-
-### The Problem
-
-V1's `SquashPipeline` uses `DispatchManyCommands()` to feed N commands to the execution
-engine in one call, avoiding per-command dispatch overhead. V2's `ExecuteBatch()` dispatches
-one command per iteration. For commands that cannot be async-dispatched, this means V2 pays
-N function calls + N stat updates vs V1's 1 batched call.
-
-### Risk
-
-Medium. Porting `SquashPipeline` to V2's single-fiber model requires rethinking the
-`async_dispatch` guard and the flush-skip heuristic (`parsed_cmd_q_len_ == pipeline_count`).
+> **CANCELLED (4 Jun 2026) — Based on a misunderstanding.** This task was added under the
+> assumption that V2's one-at-a-time `ExecuteBatch()` was causing a significant regression for
+> sync-heavy commands (ZADD, SADD, etc.) compared to V1's `SquashPipeline`. Roman clarified
+> that he never proposed porting SquashPipeline — his view is that "async dispatch is always
+> better than squashing," meaning the correct long-term fix is migrating single-key commands
+> to the async/coroutine path, not porting the squash workaround. Furthermore, Task 14's
+> instrumentation confirmed that ZADD reply coalescing in V2 is already optimal (density=10.0
+> at p=10, density=49.7 at p=100), so the execution-side overhead of one-at-a-time dispatch
+> is not the bottleneck. The task was dropped entirely.
 
 ---
 
@@ -1084,8 +1066,6 @@ The three numbers that immediately diagnose the batch density gap:
 ### v6
 - **New Task 12: TLS Support for IoLoopV2.** Required for both MC and RESP production
   deployments. Currently all TLS connections fall back to V1.
-- **New Task 13: Conditional SquashPipeline for V2.** Only if M2 ZADD benchmarks show
-  significant regression. Tracks the missing sync-command batching logic.
 - **Phase 4 added** to Recommended Implementation Order.
 
 ---
@@ -1437,13 +1417,6 @@ in Task 14's benchmark output:
 
 For ZADD-heavy workloads at p≥10: reduce syscalls from 1-per-command to ~1-per-batch, matching
 SET's behavior. This is the same 6–52× syscall reduction that SET already achieves at p=10–100.
-
-### Relationship to Task 13
-
-Task 13 (Conditional SquashPipeline) addresses execution batching for transactional commands —
-reducing per-command dispatch overhead. Task 16 is complementary and independent: it addresses
-reply-flush coalescing regardless of how commands are dispatched. Task 16 is lower risk and
-should be investigated/implemented first.
 
 ### Implementation
 

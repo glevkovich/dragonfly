@@ -559,6 +559,43 @@ class Connection : public util::Connection {
     size_t cmds = 0;                    // total number of commands executed
   } local_stats_;
 
+  // Fiber-level time profiling for IoLoopV2.
+  // Plain integer counters, single-thread access only (no atomics). All sites that
+  // mutate these run on the connection's owning fiber/proactor thread.
+  struct V2LoopStats {
+    // Phase 1 — always-on event counters.
+    uint64_t loop_iterations = 0;
+    uint64_t idle_awaits = 0;
+    uint64_t backpressure_parks = 0;
+    uint64_t parse_calls_fiber = 0;
+    uint64_t control_msgs_processed = 0;
+    uint64_t read_pending_calls = 0;
+    uint64_t bytes_read_total = 0;
+    uint64_t bytes_sent_total = 0;
+    // Flush attribution.
+    uint64_t flush_calls = 0;
+    uint64_t flush_syscalls = 0;
+    uint64_t flush_reason_idle = 0;
+    uint64_t flush_reason_backpressure = 0;
+    uint64_t flush_reason_other = 0;
+    // 2D state captured only when a real flush (syscall) occurs.
+    uint64_t flush_queue_depth_accum = 0;
+    uint64_t flush_io_buf_input_accum = 0;
+    uint64_t flush_inflight_count = 0;
+    // Wake latency (always-on; non-suspending TSC sites only).
+    uint64_t wakeup_latency_cycles = 0;
+    uint64_t wakeup_latency_count = 0;
+    // Fiber preemptions during active work (excludes idle awaits).
+    uint64_t fiber_preemptions = 0;
+    // Snapshot of SinkReplyBuilder counters (saved before builder is destroyed).
+    uint64_t rb_send_count = 0;
+    uint64_t rb_sent_bytes = 0;
+  };
+  V2LoopStats stats_v2_;
+  // TSC captured in the RegisterOnRecv callback right before io_event_.notify().
+  // Cleared at loop-top after the latency is accounted for.
+  uint64_t last_notify_tsc_ = 0;
+
   std::unique_ptr<SinkReplyBuilder> reply_builder_;
   util::HttpListenerBase* http_listener_;
   SSL_CTX* ssl_ctx_;

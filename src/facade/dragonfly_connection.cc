@@ -754,6 +754,32 @@ Connection::~Connection() {
   SSL_CTX_free(ssl_ctx_);
 #endif
   UpdateLibNameVerMap(lib_name_, lib_ver_, -1);
+
+  // Dump IoLoopV2 fiber-level profiling stats. Skipped for connections
+  // that never ran V2 (all counters zero).
+  if (VLOG_IS_ON(1) && stats_v2_.loop_iterations > 0) {
+    const auto& s = stats_v2_;
+    const size_t rb_sends = s.rb_send_count;
+    const size_t rb_bytes = s.rb_sent_bytes;
+    const double density = rb_sends ? double(local_stats_.cmds) / double(rb_sends) : 0.0;
+    const double avg_qdepth = rb_sends ? double(s.flush_queue_depth_accum) / double(rb_sends) : 0.0;
+    const double avg_iobuf = rb_sends ? double(s.flush_io_buf_input_accum) / double(rb_sends) : 0.0;
+    const double wake_lat = s.wakeup_latency_count
+                                ? double(s.wakeup_latency_cycles) / double(s.wakeup_latency_count)
+                                : 0.0;
+    VLOG(1) << "[v2stats conn=" << id_ << "] iters=" << s.loop_iterations
+            << " idle_awaits=" << s.idle_awaits << " bp_parks=" << s.backpressure_parks
+            << " parse_calls=" << s.parse_calls_fiber << " ctrl_msgs=" << s.control_msgs_processed
+            << " reads=" << s.read_pending_calls << " bytes_in=" << s.bytes_read_total
+            << " cmds=" << local_stats_.cmds << " bytes_out=" << rb_bytes
+            << " flush:calls=" << s.flush_calls << " sys=" << s.flush_syscalls
+            << " hidden=" << (rb_sends - s.flush_syscalls) << " idle=" << s.flush_reason_idle
+            << " bp=" << s.flush_reason_backpressure << " other=" << s.flush_reason_other
+            << " inflight=" << s.flush_inflight_count << " density=" << density
+            << " avg_qdepth=" << avg_qdepth << " avg_iobuf_at_flush=" << avg_iobuf
+            << " wake_lat_avg_cycles=" << wake_lat << " (n=" << s.wakeup_latency_count << ")"
+            << " fiber_preemptions=" << s.fiber_preemptions;
+  }
 }
 
 bool Connection::IsSending() const {
@@ -987,6 +1013,11 @@ void Connection::HandleRequests() {
       socket_->CancelOnErrorCb();  // noop if nothing is registered.
       VLOG(1) << "Closed connection for peer "
               << GetClientInfo(fb2::ProactorBase::me()->GetPoolIndex());
+      // Snapshot reply-builder counters before destroying it (destructor reads stats_v2_).
+      if (reply_builder_) {
+        stats_v2_.rb_send_count = reply_builder_->SendCount();
+        stats_v2_.rb_sent_bytes = reply_builder_->SentBytesTotal();
+      }
       reply_builder_.reset();
       DestroyParsedQueue();
     }
@@ -1594,6 +1625,7 @@ bool Connection::ProcessControlMessages(uint32_t quota) {
     dispatch_q_.pop_front();
     UpdateDispatchStats(msg, false /* subtract */);
     dispatched++;
+    stats_v2_.control_msgs_processed++;
 
     // If a MigrationRequestMessage arrives via the dispatch queue, stop processing
     // and let the loop iterate back to HandleMigrateRequest() at the top.
@@ -2635,6 +2667,7 @@ bool Connection::ExecuteBatch() {
       break;  // Sync command. Wait for current async commands to finish
 
     conn_stats.pipeline_dispatch_commands++;
+    local_stats_.cmds++;
     if (is_head)
       conn_stats.pipeline_dispatch_calls++;
 
@@ -2891,6 +2924,8 @@ void Connection::NotifyOnRecv(const util::FiberSocketBase::RecvNotification& n) 
 
 void Connection::ReadPendingInput() {
   // Drain available socket data into io_buf_.
+  stats_v2_.read_pending_calls++;
+  const size_t bytes_before = io_buf_.InputLen();
   io::MutableBytes buf = io_buf_.AppendBuffer();
   // A recv call can return fewer bytes than requested even if the
   // socket buffer actually contains enough data to satisfy the full request.
@@ -2916,6 +2951,7 @@ void Connection::ReadPendingInput() {
     io_buf_.CommitWrite(*res);
     buf = io_buf_.AppendBuffer();
   }
+  stats_v2_.bytes_read_total += io_buf_.InputLen() - bytes_before;
 }
 
 void Connection::CheckIoBufCapacity(bool reached_capacity, base::IoBuf* io_buf) {
@@ -2988,6 +3024,10 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoopV2() {
   peer->RegisterOnRecv([this](const FiberSocketBase::RecvNotification& n) {
     DVLOG(2) << "Calling DoReadOnRecv iobuf_len: " << io_buf_.InputLen();
     NotifyOnRecv(n);
+    // Capture notify TSC for wake-latency measurement. Runs in proactor
+    // callback context on this connection's owning thread, so the plain-store is
+    // safe (no other fiber/thread touches last_notify_tsc_).
+    last_notify_tsc_ = base::CycleClock::Now();
     io_event_.notify();
   });
 
@@ -3009,7 +3049,53 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoopV2() {
 
   const uint32_t async_dispatch_quota = GetFlag(FLAGS_async_dispatch_quota);
 
+  // Register a per-Send() callback so every flush (including FinishScope's
+  // implicit batch-end ones) is captured in stats_v2_, not just idle/bp trigger points.
+  // Guarded by VLOG_IS_ON(1) to avoid overhead in production runs.
+  if (VLOG_IS_ON(1)) {
+    reply_builder_->SetOnSendCallback([this](size_t bytes) {
+      stats_v2_.flush_syscalls++;
+      stats_v2_.bytes_sent_total += bytes;
+      stats_v2_.flush_queue_depth_accum += parsed_cmd_q_len_;
+      stats_v2_.flush_io_buf_input_accum += io_buf_.InputLen();
+      if (HasInFlightCommands())
+        stats_v2_.flush_inflight_count++;
+    });
+  }
+  auto clear_send_cb = absl::MakeCleanup([&] { reply_builder_->SetOnSendCallback(nullptr); });
+
+  // Attribute each explicit Flush() call to a reason (idle, backpressure, other).
+  // Per-send stats are now handled by the callback above.
+  auto profiled_flush = [this](uint64_t& reason_counter) {
+    stats_v2_.flush_calls++;
+    reason_counter++;
+    reply_builder_->Flush();  // callback fires inside if a real Send() happens
+  };
+
+  // Epoch snapshot taken after each idle-await so that the top-of-loop check can
+  // detect preemptions that occurred anywhere during the previous work phase,
+  // including paths that `continue` back without reaching the loop bottom.
+  uint64_t epoch_at_process = fb2::FiberSwitchEpoch();
+
   do {
+    stats_v2_.loop_iterations++;
+    // Check for mid-work fiber preemptions from the previous iteration.
+    // Must be at loop-top so that all exit paths (including continues) are covered.
+    if (VLOG_IS_ON(1) && (fb2::FiberSwitchEpoch() != epoch_at_process)) {
+      stats_v2_.fiber_preemptions++;
+    }
+    // Account for any notify() that arrived since our last loop-top.
+    if (last_notify_tsc_ != 0) {
+      const uint64_t now = base::CycleClock::Now();
+      // CycleClock is monotonic per-CPU; the proactor pins this fiber to one CPU
+      // between the notify and the loop-top, so the delta is non-negative in practice.
+      if (now > last_notify_tsc_) {
+        stats_v2_.wakeup_latency_cycles += now - last_notify_tsc_;
+        stats_v2_.wakeup_latency_count++;
+      }
+      last_notify_tsc_ = 0;
+    }
+
     HandleMigrateRequest();
 
     // Register completion for current head if its pending and we don't wait on current_wait_.
@@ -3049,17 +3135,20 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoopV2() {
 
         // Flush replies deferred by ReplyBatch before sleeping - ensures the client
         // gets its response even when no more data arrives (single commands, end of pipeline).
-        reply_builder_->Flush();
+        profiled_flush(stats_v2_.flush_reason_idle);
         if (auto err = reply_builder_->GetError(); err) {
           return err;
         }
 
+        stats_v2_.idle_awaits++;
         io_event_.await(should_wake);
       }
     }
 
     phase_ = PROCESS;
     bool reached_capacity = io_buf_.AppendLen() == 0;
+    // Snapshot epoch after the idle-await; checked at top of next iteration.
+    epoch_at_process = fb2::FiberSwitchEpoch();
 
     // Handle dispatch queue items (Control Path) with a bounded quota to prevent
     // starvation of the data path:
@@ -3103,6 +3192,7 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoopV2() {
       // Data Normal Path: we have input data AND memory budget - parse new commands, execute,
       // reply.
       size_t mem_before = conn_stats.pipeline_queue_bytes;
+      stats_v2_.parse_calls_fiber++;
       parse_status = ParseLoop();
 
       // Executing and replying to commands (in ParseLoop()) frees up memory. Because those internal
@@ -3157,11 +3247,12 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoopV2() {
         auto sub_key = qbp.v2_pipeline_backpressure_ec.subscribe_persistent(&backpressure_waiter);
 
         // Client needs replies to free its send buffer and relieve backpressure.
-        reply_builder_->Flush();
+        profiled_flush(stats_v2_.flush_reason_backpressure);
         if (auto err = reply_builder_->GetError(); err) {
           return err;
         }
 
+        stats_v2_.backpressure_parks++;
         io_event_.await([this, &is_ready_to_migrate]() {
           bool cmd_ready = parsed_head_ && parsed_head_->CanReply();
           bool under_limit = !GetQueueBackpressure().IsPipelineBufferOverLimit(
@@ -3185,7 +3276,7 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoopV2() {
     // Check io_ec_ after parsing and flushing replies, so that half-closed
     // connections get their responses before we close.
     if (io_ec_) {
-      reply_builder_->Flush();
+      profiled_flush(stats_v2_.flush_reason_other);
       if (auto err = reply_builder_->GetError(); err) {
         return err;
       }

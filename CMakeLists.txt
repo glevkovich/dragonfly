@@ -92,7 +92,7 @@ endif()
 
 option(WITH_USAN "Enable -fsanitize=undefined" OFF)
 if (SUPPORT_USAN AND WITH_USAN)
-  message(STATUS "ub sanitizer enabled")
+  message(STATUS "UndefinedBehaviorSanitizer enabled (-fsanitize=undefined)")
   set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=undefined")
   # implicit-conversion covers implicit integer truncation and sign change.
   # These are not UB by C++ standard but routinely hide real bugs (e.g. PR #7562)
@@ -111,7 +111,7 @@ endif()
 option(WITH_USAN_STRICT "Enable -fsanitize=integer (noisy: unsigned overflow etc.)" OFF)
 if (SUPPORT_USAN AND WITH_USAN AND WITH_USAN_STRICT
     AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-  message(STATUS "ub sanitizer STRICT (integer group) enabled")
+  message(STATUS "UndefinedBehaviorSanitizer STRICT enabled (-fsanitize=integer, adds unsigned overflow)")
   set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fsanitize=integer")
 endif()
 

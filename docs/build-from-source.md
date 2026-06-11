@@ -65,6 +65,9 @@ cd build-opt && ninja dragonfly
 | WITH_COLLECTION_CMDS | Include commands for collections (SET, HSET, ZSET)                                                                                                                                                                                       |
 | WITH_EXTENSION_CMDS  | Include extension commands (Bloom, HLL, JSON, ...)                                                                                                                                                                                       |
 | USE_MOLD             | Uses the mold linker to reduce link time overhead while enabling Link Time Optimization (LTO) for improved runtime performance. Recommended for benchmarking and production. |
+| WITH_ASAN            | Enable AddressSanitizer (`-fsanitize=address`). Debug builds only. Clang and GCC. |
+| WITH_USAN            | Enable UndefinedBehaviorSanitizer (`-fsanitize=undefined`). When using Clang, also enables `-fsanitize=implicit-conversion` (catches silent integer truncation / sign-change, e.g. the bug class from PR #7562), `local-bounds`, `nullability`, and `float-divide-by-zero`. Debug builds only. |
+| WITH_USAN_STRICT     | Extends `WITH_USAN` with `-fsanitize=integer`, which additionally catches unsigned integer overflow. Clang only. This flag is noisy on code that intentionally uses unsigned wrap-around (hashing, length math); recommended for nightly/scheduled CI runs only, not per-PR. |
 
 Minimal debug build:
 

@@ -516,6 +516,13 @@ ConnectionStats& __attribute__((noinline)) GetLocalConnStats() {
 }
 
 thread_local uint32_t max_busy_read_cycles_cached = UINT32_MAX;
+// Regression guard for PR #7562: this must stay uint32_t. If changed to uint64_t,
+// values such as 1ULL<<32 silently truncate to 0 when passed to ParseRedis (unsigned
+// parameter), which disables the busy-read cycle limit entirely. The narrowing is
+// well-defined by C++ [conv.integral] so -fsanitize=undefined alone will not catch it;
+// -fsanitize=implicit-conversion (enabled by WITH_USAN on Clang) is required.
+static_assert(std::is_same_v<decltype(max_busy_read_cycles_cached), uint32_t>,
+              "max_busy_read_cycles_cached must be uint32_t, not uint64_t (see PR #7562)");
 thread_local bool always_flush_pipeline_cached = absl::GetFlag(FLAGS_always_flush_pipeline);
 thread_local uint32_t pipeline_squash_limit_cached = absl::GetFlag(FLAGS_pipeline_squash_limit);
 

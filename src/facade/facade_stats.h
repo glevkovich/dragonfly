@@ -47,6 +47,9 @@ struct ConnectionStats {
 
   // number of times the connection yielded due to max_busy_read_usec limit
   uint32_t num_read_yields = 0;
+  // Number of times the V2 proactor OnRecv callback drained socket bytes
+  // into io_buf_
+  uint64_t proactor_reads = 0;
   uint64_t num_migrations = 0;
   uint64_t num_recv_provided_calls = 0;
 

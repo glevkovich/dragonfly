@@ -1889,6 +1889,9 @@ void PrintPrometheusMetrics(uint64_t uptime, const Metrics& m, DflyCmd* dfly_cmd
                             &resp->body());
   AppendMetricWithoutLabels("net_read_yields_total", "", conn_stats.num_read_yields,
                             MetricType::COUNTER, &resp->body());
+  AppendMetricWithoutLabels("proactor_reads_total",
+                            "V2 socket reads drained from the proactor during OnRecv callback",
+                            conn_stats.proactor_reads, MetricType::COUNTER, &resp->body());
 
   AppendMetricWithoutLabels("net_input_bytes_total", "", conn_stats.io_read_bytes,
                             MetricType::COUNTER, &resp->body());

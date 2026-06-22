@@ -3060,6 +3060,13 @@ void Connection::NotifyOnRecv(const util::FiberSocketBase::RecvNotification& n) 
       io_buf_.WriteAndCommit(buf.data(), buf.size());
     }
     last_interaction_ = time(nullptr);
+
+    auto& conn_stats = tl_facade_stats->conn_stats;
+    conn_stats.io_read_bytes += buf.size();
+    local_stats_.net_bytes_in += buf.size();
+    ++conn_stats.io_read_cnt;
+    ++local_stats_.read_cnt;
+    ++conn_stats.num_recv_provided_calls;
   } else {
     LOG(FATAL) << "Should not reach here";
   }

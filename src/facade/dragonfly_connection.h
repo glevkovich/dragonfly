@@ -367,7 +367,9 @@ class Connection : public util::Connection {
   void MaybeEnableRecvMultishot();
 
   // Drains currently available bytes from socket into io_buf_ using non-blocking reads.
-  void ReadPendingInput();
+  // from_proactor_cb=true marks calls made from the proactor's OnRecv callback (connection fiber
+  // suspended), used to update conn_stats.proactor_reads.
+  void ReadPendingInput(bool from_proactor_cb = false);
 
   void CheckIoBufCapacity(bool reached_capacity, base::IoBuf* buf);
 

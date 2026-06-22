@@ -3033,7 +3033,7 @@ void Connection::OnRecvNotification(const util::FiberSocketBase::RecvNotificatio
   size_t input_before = io_buf_.InputLen();
   NotifyOnRecv(n);
   // Eagerly drain the socket while the fiber is suspended to prevent receive buffer starvation.
-  ReadPendingInput();
+  ReadPendingInput(/*from_proactor_cb=*/true);
   // Suppress spurious fiber wakeups from completions that harvested nothing.
   if (HasNetworkEvent(input_before))
     io_event_.notify();
@@ -3065,10 +3065,11 @@ void Connection::NotifyOnRecv(const util::FiberSocketBase::RecvNotification& n) 
   }
 }
 
-void Connection::ReadPendingInput() {
+void Connection::ReadPendingInput(bool from_proactor_cb) {
   if (!pending_input_)
     return;
 
+  bool read_any = false;
   // Drain available socket data into io_buf_.
   io::MutableBytes buf = io_buf_.AppendBuffer();
   // A recv call can return fewer bytes than requested even if the
@@ -3093,6 +3094,7 @@ void Connection::ReadPendingInput() {
 
     DVLOG(1) << "Read " << *res << " bytes from socket";
 
+    read_any = true;
     auto& conn_stats = tl_facade_stats->conn_stats;
     size_t commit_sz = *res;
     conn_stats.io_read_bytes += commit_sz;
@@ -3105,6 +3107,11 @@ void Connection::ReadPendingInput() {
     io_buf_.CommitWrite(commit_sz);
     buf = io_buf_.AppendBuffer();
   }
+
+  // Count reads issued from the proactor OnRecv callback (connection fiber suspended) that
+  // actually harvested bytes - i.e. socket reads that overlapped command execution/reply.
+  if (from_proactor_cb && read_any)
+    ++GetLocalConnStats().proactor_reads;
 }
 
 void Connection::CheckIoBufCapacity(bool reached_capacity, base::IoBuf* io_buf) {

@@ -825,11 +825,8 @@ void Connection::OnPostMigrateThread() {
 
   if (ioloop_v2_ && socket_ && socket_->IsOpen() && migration_allowed_to_register_) {
     MaybeEnableRecvMultishot();
-    socket_->RegisterOnRecv([this](const FiberSocketBase::RecvNotification& n) {
-      NotifyOnRecv(n);
-      ReadPendingInput();
-      io_event_.notify();
-    });
+    socket_->RegisterOnRecv(
+        [this](const FiberSocketBase::RecvNotification& n) { OnRecvNotification(n); });
   }
 
   migration_in_process_ = false;
@@ -3031,6 +3028,17 @@ bool ConnectionRef::operator==(const ConnectionRef& other) const {
   return client_id_ == other.client_id_;
 }
 
+void Connection::OnRecvNotification(const util::FiberSocketBase::RecvNotification& n) {
+  DVLOG(2) << "OnRecvNotification iobuf_len: " << io_buf_.InputLen();
+  size_t input_before = io_buf_.InputLen();
+  NotifyOnRecv(n);
+  // Eagerly drain the socket while the fiber is suspended to prevent receive buffer starvation.
+  ReadPendingInput();
+  // Suppress spurious fiber wakeups from completions that harvested nothing.
+  if (HasNetworkEvent(input_before))
+    io_event_.notify();
+}
+
 void Connection::NotifyOnRecv(const util::FiberSocketBase::RecvNotification& n) {
   if (std::holds_alternative<std::error_code>(n.read_result)) {
     io_ec_ = std::get<std::error_code>(n.read_result);
@@ -3278,15 +3286,8 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoopV2() {
 
   MaybeEnableRecvMultishot();
 
-  peer->RegisterOnRecv([this](const FiberSocketBase::RecvNotification& n) {
-    DVLOG(2) << "Calling DoReadOnRecv iobuf_len: " << io_buf_.InputLen();
-    NotifyOnRecv(n);
-    // Eagerly drain the kernel TCP receive buffer while the connection fiber might be is
-    // blocked/busy. This prevents rbuf starvation (V2's single fiber can't read while executing).
-    // Safe: callback only fires when the fiber has yielded - no concurrent access to io_buf_.
-    ReadPendingInput();
-    io_event_.notify();
-  });
+  peer->RegisterOnRecv(
+      [this](const FiberSocketBase::RecvNotification& n) { OnRecvNotification(n); });
 
   ParserStatus parse_status = OK;
 

@@ -1446,6 +1446,7 @@ Connection::ParserStatus Connection::ParseRedis(base::IoBuf& io_buf, uint32_t ma
   // test fail.
   // TODO(kostas): follow up on this
   size_t total_consumed = 0;
+  uint32_t iteration_cmds = 0;
   do {
     bool stop_parsing = false;
     DCHECK(parsed_cmd_);
@@ -1453,6 +1454,7 @@ Connection::ParserStatus Connection::ParseRedis(base::IoBuf& io_buf, uint32_t ma
     request_consumed_bytes_ += consumed;
     total_consumed += consumed;
     if (result == RespSrvParser::OK) {
+      ++iteration_cmds;
       DCHECK(!parsed_cmd_->empty());
       DVLOG(2) << "Got Args with first token " << parsed_cmd_->Front();
 
@@ -1501,6 +1503,12 @@ Connection::ParserStatus Connection::ParseRedis(base::IoBuf& io_buf, uint32_t ma
   } while (RespSrvParser::OK == result && !read_buffer.empty() && !reply_builder_->GetError());
 
   io_buf.ConsumeInput(total_consumed);
+
+  if (iteration_cmds > 0) {
+    auto& cstats = GetLocalConnStats();
+    ++cstats.parse_iteration_cnt;
+    cstats.parse_iteration_cmd_cnt += iteration_cmds;
+  }
 
   parser_error_ = result;
   if (result == RespSrvParser::OK)
@@ -1833,6 +1841,11 @@ void Connection::SquashPipeline() {
 
   conn_stats.pipeline_dispatch_calls++;
   conn_stats.pipeline_dispatch_commands += squashed;
+
+  conn_stats.squash_call_cnt++;
+  conn_stats.squash_cmd_cnt += squashed;
+  conn_stats.squash_batch_size_hist.Add(squashed);
+  DVLOG(2) << "[" << id_ << "] V1 squash " << squashed << " cmds";
 
   // If interrupted due to pause or a non-squashable command, fall back to regular dispatch.
   skip_next_squashing_ = (squashed != pipeline_count);
@@ -2685,6 +2698,10 @@ bool Connection::SquashPipelineV2() {
 
   conn_stats.pipeline_dispatch_calls++;
   conn_stats.pipeline_dispatch_commands += squashed;
+  conn_stats.squash_call_cnt++;
+  conn_stats.squash_cmd_cnt += squashed;
+  conn_stats.squash_batch_size_hist.Add(squashed);
+  DVLOG(2) << "[" << id_ << "] V2 squash " << squashed << " cmds";
   return true;
 }
 
@@ -3419,6 +3436,11 @@ void ResetStats() {
   cstats.command_cnt_other = 0;
   cstats.io_read_cnt = 0;
   cstats.io_read_bytes = 0;
+  cstats.squash_call_cnt = 0;
+  cstats.squash_cmd_cnt = 0;
+  cstats.squash_batch_size_hist.Clear();
+  cstats.parse_iteration_cnt = 0;
+  cstats.parse_iteration_cmd_cnt = 0;
 
   tl_facade_stats->reply_stats = {};
   if (io_req_size_hist)

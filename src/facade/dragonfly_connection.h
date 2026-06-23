@@ -369,7 +369,10 @@ class Connection : public util::Connection {
   // Drains currently available bytes from socket into io_buf_ using non-blocking reads.
   // from_proactor_cb=true marks calls made from the proactor's OnRecv callback (connection fiber
   // suspended), used to update conn_stats.proactor_reads.
-  void ReadPendingInput(bool from_proactor_cb = false);
+  // force=true bypasses the pending_input_ guard and always attempts TryRecv. Use this when
+  // the fiber is running (no proactor callbacks fire, so pending_input_ is never refreshed)
+  // but the kernel socket buffer may already contain data that arrived during execution.
+  void ReadPendingInput(bool from_proactor_cb = false, bool force = false);
 
   void CheckIoBufCapacity(bool reached_capacity, base::IoBuf* buf);
 
@@ -706,6 +709,11 @@ class Connection : public util::Connection {
       // If post migration is allowed to call RegisterRecv
       bool migration_allowed_to_register_ : 1;
       bool pending_input_ : 1;
+
+      // True when io_uring multishot recv is active for this socket. When set, the kernel
+      // owns the recv path and delivers data via provided buffers. This conflicts with TryRecv that
+      // would would steal/interleave bytes and corrupt the stream.
+      bool recv_multishot_active_ : 1;
     };
   };
 

@@ -126,6 +126,22 @@ ABSL_FLAG(uint32_t, pipeline_wait_batch_usec, 0,
           "If non-zero, waits for this time for more I/O "
           " events to come for the connection in case there is only one command in the pipeline. ");
 
+ABSL_FLAG(bool, pipeline_parse_ahead, false,
+          "V2 only: before executing a parsed pipeline batch, opportunistically read and parse "
+          "more already-available input (non-blocking, never waits) so the squash sees one large "
+          "batch instead of many small ones. Decouples squash batch size from the read buffer "
+          "size without growing the buffer.");
+ABSL_FLAG(uint32_t, pipeline_parse_ahead_limit, 256,
+          "Max queued commands to gather via parse-ahead before executing; caps the extra "
+          "latency/memory. Only used when pipeline_parse_ahead=true.");
+ABSL_FLAG(
+    uint32_t, pipeline_parse_ahead_sleep_usec, 0,
+    "Experimental (V2 parse-ahead only): wait this many microseconds once per parse pass "
+    "before harvesting more input, so a flow-controlled trickle of pipelined commands can "
+    "accumulate into one larger squash batch instead of many small per-hop squashes. The "
+    "per-batch sleep cost is amortized over the larger batch and saves cross-shard squash "
+    "hops (the dominant per-command cost). 0 disables. Only used when pipeline_parse_ahead=true.");
+
 ABSL_FLAG(bool, enable_memcache_io_loop_v2, true,
           "Enable the event-driven IoLoopV2 for non-TLS Memcache connections.");
 ABSL_FLAG(bool, enable_resp_io_loop_v2, false,
@@ -537,6 +553,11 @@ ConnectionStats& __attribute__((noinline)) GetLocalConnStats() {
 thread_local uint32_t max_busy_read_cycles_cached = UINT32_MAX;
 thread_local bool always_flush_pipeline_cached = absl::GetFlag(FLAGS_always_flush_pipeline);
 thread_local uint32_t pipeline_squash_limit_cached = absl::GetFlag(FLAGS_pipeline_squash_limit);
+thread_local bool pipeline_parse_ahead_cached = absl::GetFlag(FLAGS_pipeline_parse_ahead);
+thread_local uint32_t pipeline_parse_ahead_limit_cached =
+    absl::GetFlag(FLAGS_pipeline_parse_ahead_limit);
+thread_local uint32_t pipeline_parse_ahead_sleep_usec_cached =
+    absl::GetFlag(FLAGS_pipeline_parse_ahead_sleep_usec);
 
 }  // namespace
 
@@ -1531,9 +1552,43 @@ auto Connection::ParseLoop() -> ParserStatus {
 
   ParserStatus parse_status = NEED_MORE;
 
-  do {
+  while (true) {
     DCHECK_GT(io_buf_.InputLen(), 0u);
     parse_status = (this->*parse_func)(io_buf_);
+
+    // Parse-ahead (V2 only): when the parser hits a partial command (NEED_MORE), the kernel
+    // socket buffer very likely holds more data (p=N clients keep N commands in-flight at all
+    // times, so Recv-Q is almost never empty). We can accumulate a much larger squash batch
+    // without growing the per-connection buffer by:
+    //   1. Compact() — moves the partial bytes to the front of io_buf_, reclaiming the space
+    //      that was occupied by the fully-consumed commands (AppendLen goes from 0 to
+    //      capacity - partial_size, typically ~28 KB for 4 KB values in a 32 KB buffer).
+    //   2. ReadPendingInput(force=true) — synchronously drains the kernel socket buffer into
+    //      that reclaimed space (TryRecv until EAGAIN or buffer full).
+    //   3. Continue the parse loop without executing: accumulate more complete commands on top
+    //      of the partial that was just completed by the fresh bytes.
+    // This repeats until TryRecv returns EAGAIN (kernel drained) or the command-count limit is
+    // hit, then we execute one large squash batch instead of many small per-buffer ones.
+    //
+    // Why NEED_MORE and not OK+InputLen==0 (the old guard)?
+    // NEED_MORE fires precisely when the buffer was filled to capacity — i.e. when the kernel
+    // almost certainly has more data. OK+InputLen==0 fires only on rare exact-boundary reads
+    // that coincide with a momentarily empty Recv-Q, so TryRecv always returned EAGAIN there.
+    if (ioloop_v2_ && pipeline_parse_ahead_cached && parse_status == NEED_MORE &&
+        !recv_multishot_active_ && parsed_cmd_q_len_ < pipeline_parse_ahead_limit_cached &&
+        !IsOverPipelineLimit()) {
+      // Reclaim the space consumed by fully-parsed commands ahead of the partial fragment.
+      if (io_buf_.AppendLen() == 0) {
+        io_buf_.Compact();
+      }
+      if (io_buf_.AppendLen() > 0) {
+        const size_t before = io_buf_.InputLen();
+        ReadPendingInput(/*from_proactor_cb=*/false, /*force=*/true);
+        if (io_buf_.InputLen() > before) {
+          continue;  // more bytes appended; re-parse before executing
+        }
+      }
+    }
 
     // Execute/reply the commands parsed so far first, so a trailing protocol error still flushes
     // earlier replies in order before we report it.
@@ -1547,7 +1602,10 @@ auto Connection::ParseLoop() -> ParserStatus {
     // protocol error reply (using parser_error_) and close the connection.
     if (parse_status == ERROR)
       return ERROR;
-  } while (parse_status == OK && io_buf_.InputLen() > 0);
+
+    if (parse_status != OK || io_buf_.InputLen() == 0)
+      break;
+  }
 
   return parse_status;  // OK or NEED_MORE
 }
@@ -2988,12 +3046,17 @@ void Connection::UpdateFromFlags() {
   always_flush_pipeline_cached = GetFlag(FLAGS_always_flush_pipeline);
   pipeline_squash_limit_cached = GetFlag(FLAGS_pipeline_squash_limit);
   pipeline_wait_batch_usec = GetFlag(FLAGS_pipeline_wait_batch_usec);
+  pipeline_parse_ahead_cached = GetFlag(FLAGS_pipeline_parse_ahead);
+  pipeline_parse_ahead_limit_cached = GetFlag(FLAGS_pipeline_parse_ahead_limit);
+  pipeline_parse_ahead_sleep_usec_cached = GetFlag(FLAGS_pipeline_parse_ahead_sleep_usec);
 }
 
 std::vector<std::string> Connection::GetMutableFlagNames() {
   return base::GetFlagNames(FLAGS_pipeline_queue_limit, FLAGS_pipeline_buffer_limit,
                             FLAGS_max_busy_read_usec, FLAGS_always_flush_pipeline,
-                            FLAGS_pipeline_squash_limit, FLAGS_pipeline_wait_batch_usec);
+                            FLAGS_pipeline_squash_limit, FLAGS_pipeline_wait_batch_usec,
+                            FLAGS_pipeline_parse_ahead, FLAGS_pipeline_parse_ahead_limit,
+                            FLAGS_pipeline_parse_ahead_sleep_usec);
 }
 
 void Connection::GetRequestSizeHistogramThreadLocal(std::string* hist) {
@@ -3089,8 +3152,8 @@ void Connection::NotifyOnRecv(const util::FiberSocketBase::RecvNotification& n) 
   }
 }
 
-void Connection::ReadPendingInput(bool from_proactor_cb) {
-  if (!pending_input_)
+void Connection::ReadPendingInput(bool from_proactor_cb, bool force) {
+  if (!pending_input_ && !force)
     return;
 
   bool read_any = false;
@@ -3182,6 +3245,8 @@ void Connection::MaybeEnableRecvMultishot() {
     if (up->BufRingEntrySize(kRecvSockGid) > 0 && !is_tls_) {
       static_cast<fb2::UringSocket*>(socket_.get())->EnableRecvMultishot();
       pending_input_ = false;
+      recv_multishot_active_ = true;
+      VLOG(1) << "Enabled recv multishot for connection " << id_ << " on thread ";
     }
   }
 #endif

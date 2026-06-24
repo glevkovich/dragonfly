@@ -142,6 +142,11 @@ ABSL_FLAG(
     "per-batch sleep cost is amortized over the larger batch and saves cross-shard squash "
     "hops (the dominant per-command cost). 0 disables. Only used when pipeline_parse_ahead=true.");
 
+ABSL_FLAG(bool, enable_spurious_wakeups_avoidance, true,
+          "V2 only: when an OnRecv completion harvests no new data (a spurious POLLIN), skip "
+          "waking the connection fiber (HasNetworkEvent() guard). Set false to always wake "
+          "(pre-optimization behavior) for A/B perf testing.");
+
 ABSL_FLAG(bool, enable_memcache_io_loop_v2, true,
           "Enable the event-driven IoLoopV2 for non-TLS Memcache connections.");
 ABSL_FLAG(bool, enable_resp_io_loop_v2, false,
@@ -558,6 +563,8 @@ thread_local uint32_t pipeline_parse_ahead_limit_cached =
     absl::GetFlag(FLAGS_pipeline_parse_ahead_limit);
 thread_local uint32_t pipeline_parse_ahead_sleep_usec_cached =
     absl::GetFlag(FLAGS_pipeline_parse_ahead_sleep_usec);
+thread_local bool enable_spurious_wakeups_avoidance_cached =
+    absl::GetFlag(FLAGS_enable_spurious_wakeups_avoidance);
 
 }  // namespace
 
@@ -1332,6 +1339,9 @@ void Connection::ConnectionFlow() {
 
   if (ioloop_v2_) {
     socket_->ResetOnRecvHook();
+    // TEMP debug (revert): report OnRecvNotification call count and skipped-notify count.
+    LOG(INFO) << "[" << id_ << "] TEMP OnRecvNotification X=" << dbg_onrecv_calls_
+              << " notify_skipped Y=" << dbg_onrecv_notify_skipped_;
   }
 
   // We wait for dispatch_fb to finish writing the previous replies before replying to the last
@@ -3049,14 +3059,15 @@ void Connection::UpdateFromFlags() {
   pipeline_parse_ahead_cached = GetFlag(FLAGS_pipeline_parse_ahead);
   pipeline_parse_ahead_limit_cached = GetFlag(FLAGS_pipeline_parse_ahead_limit);
   pipeline_parse_ahead_sleep_usec_cached = GetFlag(FLAGS_pipeline_parse_ahead_sleep_usec);
+  enable_spurious_wakeups_avoidance_cached = GetFlag(FLAGS_enable_spurious_wakeups_avoidance);
 }
 
 std::vector<std::string> Connection::GetMutableFlagNames() {
-  return base::GetFlagNames(FLAGS_pipeline_queue_limit, FLAGS_pipeline_buffer_limit,
-                            FLAGS_max_busy_read_usec, FLAGS_always_flush_pipeline,
-                            FLAGS_pipeline_squash_limit, FLAGS_pipeline_wait_batch_usec,
-                            FLAGS_pipeline_parse_ahead, FLAGS_pipeline_parse_ahead_limit,
-                            FLAGS_pipeline_parse_ahead_sleep_usec);
+  return base::GetFlagNames(
+      FLAGS_pipeline_queue_limit, FLAGS_pipeline_buffer_limit, FLAGS_max_busy_read_usec,
+      FLAGS_always_flush_pipeline, FLAGS_pipeline_squash_limit, FLAGS_pipeline_wait_batch_usec,
+      FLAGS_pipeline_parse_ahead, FLAGS_pipeline_parse_ahead_limit,
+      FLAGS_pipeline_parse_ahead_sleep_usec, FLAGS_enable_spurious_wakeups_avoidance);
 }
 
 void Connection::GetRequestSizeHistogramThreadLocal(std::string* hist) {
@@ -3110,13 +3121,25 @@ bool ConnectionRef::operator==(const ConnectionRef& other) const {
 
 void Connection::OnRecvNotification(const util::FiberSocketBase::RecvNotification& n) {
   DVLOG(2) << "OnRecvNotification iobuf_len: " << io_buf_.InputLen();
+  ++dbg_onrecv_calls_;  // TEMP
   size_t input_before = io_buf_.InputLen();
   NotifyOnRecv(n);
   // Eagerly drain the socket while the fiber is suspended to prevent receive buffer starvation.
   ReadPendingInput(/*from_proactor_cb=*/true);
-  // Suppress spurious fiber wakeups from completions that harvested nothing.
-  if (HasNetworkEvent(input_before))
+  // Both epoll and io_uring poll can deliver spurious POLLIN completions where the subsequent
+  // recv() returns EAGAIN (no actual data). When the avoidance optimization is enabled,
+  // HasNetworkEvent() filters these out so the spurious proactor wakeup is not propagated as a
+  // spurious fiber wakeup: if nothing changed (no error, no new bytes, no pending input remaining)
+  // waking the fiber is wasteful — it would only re-evaluate ShouldWakeIdle(), find it false, and
+  // immediately re-park. When disabled, always wake (pre-optimization behavior) for A/B testing.
+  if (enable_spurious_wakeups_avoidance_cached) {
+    if (HasNetworkEvent(input_before))
+      io_event_.notify();
+    else
+      ++dbg_onrecv_notify_skipped_;  // TEMP
+  } else {
     io_event_.notify();
+  }
 }
 
 void Connection::NotifyOnRecv(const util::FiberSocketBase::RecvNotification& n) {

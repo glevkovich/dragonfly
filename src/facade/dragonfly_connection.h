@@ -717,6 +717,11 @@ class Connection : public util::Connection {
     };
   };
 
+  // TEMP debug counters (revert): X = OnRecvNotification calls, Y = times io_event_.notify()
+  // was skipped (HasNetworkEvent() was false).
+  uint64_t dbg_onrecv_calls_ = 0;
+  uint64_t dbg_onrecv_notify_skipped_ = 0;
+
   ListenerType listener_type_ = ListenerType::MAIN_RESP;
 
   bool request_shutdown_ = false;

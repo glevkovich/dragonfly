@@ -1,0 +1,31 @@
+# === Spurious recv-wakeup suppression A/B (V2 only) ===
+#
+# Flag under test: --enable_spurious_wakeups_avoidance
+#   true  = enabled  (current/optimized: skip io_event_.notify() when OnRecv harvested nothing)
+#   false = disabled (always notify — pre-optimization behavior)
+#
+# Matrix: {single_conn, multi_conn} x {256, 1024, 4096 B} x {flag on, flag off}
+#   pipeline depths 1,10,100 ; 3 runs per row.
+#
+# Duration is driven by the DUR env var (defaults to 10s). Override in one place:
+#   DUR=10 SERVER_HOST=<srv_ip> CLIENT_HOST=<cli_ip> ./bench.sh --batch spurious_wakeup_ab.bench
+# (MEMTIER_ARGS is double-quoted so ${DUR} expands when bench.sh evals each line; in --batch
+#  mode BENCH_DURATION is ignored when MEMTIER_ARGS is set, so we inject --test-time=${DUR:-30}.)
+#
+# NOTE: all rows are v2 — the flag only affects the IoLoopV2 recv path.
+
+# --- single_conn (1 connection) ---
+PIPELINE=1,10,100 CMD=set EXTRA_SERVER_FLAGS='--enable_spurious_wakeups_avoidance=true'  MEMTIER_ARGS="-t 1 -c 1  --ratio=1:0 -d 256  --key-prefix=bench --test-time=${DUR:-30} --hide-histogram" ./build-opt/dragonfly single_conn 3 sup_on_single_d256   v2 4
+PIPELINE=1,10,100 CMD=set EXTRA_SERVER_FLAGS='--enable_spurious_wakeups_avoidance=false' MEMTIER_ARGS="-t 1 -c 1  --ratio=1:0 -d 256  --key-prefix=bench --test-time=${DUR:-30} --hide-histogram" ./build-opt/dragonfly single_conn 3 sup_off_single_d256  v2 4
+PIPELINE=1,10,100 CMD=set EXTRA_SERVER_FLAGS='--enable_spurious_wakeups_avoidance=true'  MEMTIER_ARGS="-t 1 -c 1  --ratio=1:0 -d 1024 --key-prefix=bench --test-time=${DUR:-30} --hide-histogram" ./build-opt/dragonfly single_conn 3 sup_on_single_d1024  v2 4
+PIPELINE=1,10,100 CMD=set EXTRA_SERVER_FLAGS='--enable_spurious_wakeups_avoidance=false' MEMTIER_ARGS="-t 1 -c 1  --ratio=1:0 -d 1024 --key-prefix=bench --test-time=${DUR:-30} --hide-histogram" ./build-opt/dragonfly single_conn 3 sup_off_single_d1024 v2 4
+PIPELINE=1,10,100 CMD=set EXTRA_SERVER_FLAGS='--enable_spurious_wakeups_avoidance=true'  MEMTIER_ARGS="-t 1 -c 1  --ratio=1:0 -d 4096 --key-prefix=bench --test-time=${DUR:-30} --hide-histogram" ./build-opt/dragonfly single_conn 3 sup_on_single_d4096  v2 4
+PIPELINE=1,10,100 CMD=set EXTRA_SERVER_FLAGS='--enable_spurious_wakeups_avoidance=false' MEMTIER_ARGS="-t 1 -c 1  --ratio=1:0 -d 4096 --key-prefix=bench --test-time=${DUR:-30} --hide-histogram" ./build-opt/dragonfly single_conn 3 sup_off_single_d4096 v2 4
+
+# --- multi_conn (2 threads x 25 conn = 50 connections) ---
+PIPELINE=1,10,100 CMD=set EXTRA_SERVER_FLAGS='--enable_spurious_wakeups_avoidance=true'  MEMTIER_ARGS="-t 2 -c 25 --ratio=1:0 -d 256  --key-prefix=bench --test-time=${DUR:-30} --hide-histogram" ./build-opt/dragonfly multi_conn 3 sup_on_multi_d256   v2 4
+PIPELINE=1,10,100 CMD=set EXTRA_SERVER_FLAGS='--enable_spurious_wakeups_avoidance=false' MEMTIER_ARGS="-t 2 -c 25 --ratio=1:0 -d 256  --key-prefix=bench --test-time=${DUR:-30} --hide-histogram" ./build-opt/dragonfly multi_conn 3 sup_off_multi_d256  v2 4
+PIPELINE=1,10,100 CMD=set EXTRA_SERVER_FLAGS='--enable_spurious_wakeups_avoidance=true'  MEMTIER_ARGS="-t 2 -c 25 --ratio=1:0 -d 1024 --key-prefix=bench --test-time=${DUR:-30} --hide-histogram" ./build-opt/dragonfly multi_conn 3 sup_on_multi_d1024  v2 4
+PIPELINE=1,10,100 CMD=set EXTRA_SERVER_FLAGS='--enable_spurious_wakeups_avoidance=false' MEMTIER_ARGS="-t 2 -c 25 --ratio=1:0 -d 1024 --key-prefix=bench --test-time=${DUR:-30} --hide-histogram" ./build-opt/dragonfly multi_conn 3 sup_off_multi_d1024 v2 4
+PIPELINE=1,10,100 CMD=set EXTRA_SERVER_FLAGS='--enable_spurious_wakeups_avoidance=true'  MEMTIER_ARGS="-t 2 -c 25 --ratio=1:0 -d 4096 --key-prefix=bench --test-time=${DUR:-30} --hide-histogram" ./build-opt/dragonfly multi_conn 3 sup_on_multi_d4096  v2 4
+PIPELINE=1,10,100 CMD=set EXTRA_SERVER_FLAGS='--enable_spurious_wakeups_avoidance=false' MEMTIER_ARGS="-t 2 -c 25 --ratio=1:0 -d 4096 --key-prefix=bench --test-time=${DUR:-30} --hide-histogram" ./build-opt/dragonfly multi_conn 3 sup_off_multi_d4096 v2 4

@@ -374,7 +374,10 @@ class Connection : public util::Connection {
   // Drains currently available bytes from socket into io_buf_ using non-blocking reads.
   // from_proactor_cb=true marks calls made from the proactor's OnRecv callback (connection fiber
   // suspended), used to update conn_stats.proactor_reads.
-  void ReadPendingInput(bool from_proactor_cb = false);
+  // force=true bypasses the pending_input_ guard and always attempts TryRecv. Use this when
+  // the fiber is running (no proactor callbacks fire, so pending_input_ is never refreshed)
+  // but the kernel socket buffer may already contain data that arrived during execution.
+  void ReadPendingInput(bool from_proactor_cb = false, bool force = false);
 
   void CheckIoBufCapacity(bool reached_capacity, base::IoBuf* buf);
 
@@ -659,6 +662,21 @@ class Connection : public util::Connection {
     size_t cmds = 0;                    // total number of commands executed
   } local_stats_;
 
+  // TODO(remove): temporary per-connection parse-ahead / idle-await diagnostics. These are NOT
+  // metrics; they are dumped once to the INFO log when the connection closes (see ConnectionFlow)
+  // to help diagnose V2 pipeline throughput variance. Remove together with the dump site.
+  struct {
+    uint64_t parseloop_iters = 0;  // ParseLoop inner-loop iterations (parse passes)
+    uint64_t pa_attempts = 0;      // parse-ahead top-up reads attempted
+    uint64_t pa_read_hits = 0;     // parse-ahead read appended bytes (continued parsing)
+    uint64_t pa_read_misses = 0;   // parse-ahead read returned nothing (socket drained, EAGAIN)
+    uint64_t idle_awaits = 0;      // times the loop parked in the idle await (slept)
+    uint64_t stalled_awaits = 0;   // subset of idle_awaits entered while stalled on a partial
+    uint64_t squash_calls = 0;     // SquashPipelineV2 calls that squashed >= 1 command
+    uint64_t squash_cmds = 0;      // total commands squashed
+    uint64_t max_batch = 0;        // largest single squash batch
+  } tmp_pa_stats_;
+
   std::unique_ptr<SinkReplyBuilder> reply_builder_;
   util::HttpListenerBase* http_listener_;
   SSL_CTX* ssl_ctx_;
@@ -704,6 +722,17 @@ class Connection : public util::Connection {
       // If post migration is allowed to call RegisterRecv
       bool migration_allowed_to_register_ : 1;
       bool pending_input_ : 1;
+
+      // True when io_uring multishot recv is active for this socket. When set, the kernel
+      // owns the recv path and delivers data via provided buffers. This conflicts with TryRecv that
+      // would would steal/interleave bytes and corrupt the stream.
+      bool recv_multishot_active_ : 1;
+
+      // True when the last parse stopped on a partial command (NEED_MORE) and the socket is
+      // drained: io_buf_ holds bytes, but they are not actionable until more arrive. Used by
+      // ShouldWakeIdle() to avoid busy-spinning on a stuck partial. Cleared the moment fresh
+      // bytes are appended (ReadPendingInput / proactor OnRecv).
+      bool input_stalled_ : 1;
     };
   };
 

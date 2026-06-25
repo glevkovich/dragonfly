@@ -126,6 +126,19 @@ ABSL_FLAG(uint32_t, pipeline_wait_batch_usec, 0,
           "If non-zero, waits for this time for more I/O "
           " events to come for the connection in case there is only one command in the pipeline. ");
 
+ABSL_FLAG(bool, pipeline_parse_ahead, false,
+          "V2 only: before executing a parsed pipeline batch, opportunistically read and parse "
+          "more already-available input (non-blocking, never waits) so the squash sees one large "
+          "batch instead of many small ones. Decouples squash batch size from the read buffer "
+          "size without growing the buffer.");
+
+ABSL_FLAG(uint32_t, pipeline_parse_ahead_max_reads, 1,
+          "V2 parse-ahead bound: max non-blocking top-up reads attempted per parse cycle before "
+          "executing the batch. This makes parse-ahead best-effort instead of draining the entire "
+          "in-flight pipeline: it grabs whatever already pooled (raising the batch a little) but "
+          "executes promptly, preserving I/O-compute overlap and keeping recv syscalls low. "
+          "0 disables top-up reads even when pipeline_parse_ahead is set.");
+
 ABSL_FLAG(bool, enable_memcache_io_loop_v2, true,
           "Enable the event-driven IoLoopV2 for non-TLS Memcache connections.");
 ABSL_FLAG(bool, enable_resp_io_loop_v2, false,
@@ -537,6 +550,12 @@ ConnectionStats& __attribute__((noinline)) GetLocalConnStats() {
 thread_local uint32_t max_busy_read_cycles_cached = UINT32_MAX;
 thread_local bool always_flush_pipeline_cached = absl::GetFlag(FLAGS_always_flush_pipeline);
 thread_local uint32_t pipeline_squash_limit_cached = absl::GetFlag(FLAGS_pipeline_squash_limit);
+thread_local bool pipeline_parse_ahead_cached = absl::GetFlag(FLAGS_pipeline_parse_ahead);
+thread_local uint32_t pipeline_parse_ahead_max_reads_cached =
+    absl::GetFlag(FLAGS_pipeline_parse_ahead_max_reads);
+
+// Max queued commands to gather via parse-ahead before executing; caps extra latency/memory.
+constexpr uint32_t kParseAheadMaxBatch = 256;
 
 }  // namespace
 
@@ -1352,6 +1371,26 @@ void Connection::ConnectionFlow() {
                             << " during phase " << kPhaseName[phase_] << " : " << ec << " "
                             << ec.message();
   }
+
+  // TODO(remove): one-shot per-connection parse-ahead / await diagnostics dumped at close. Not a
+  // metric; only meant to give insight into V2 pipeline throughput variance during benchmarking.
+  if (ioloop_v2_ && local_stats_.cmds > 0) {
+    const auto& s = tmp_pa_stats_;
+    auto ratio = [](double a, double b) { return b > 0 ? a / b : 0.0; };
+    LOG(INFO) << "[conn " << id_ << "] PA-DIAG"
+              << " cmds=" << local_stats_.cmds << " reads=" << local_stats_.read_cnt
+              << " net_in=" << local_stats_.net_bytes_in
+              << " bytes_per_read=" << ratio(local_stats_.net_bytes_in, local_stats_.read_cnt)
+              << " parseloop_iters=" << s.parseloop_iters
+              << " cmds_per_iter=" << ratio(local_stats_.cmds, s.parseloop_iters)
+              << " pa_attempts=" << s.pa_attempts << " pa_hits=" << s.pa_read_hits
+              << " pa_misses=" << s.pa_read_misses
+              << " pa_hit_rate=" << ratio(s.pa_read_hits, s.pa_attempts)
+              << " idle_awaits=" << s.idle_awaits << " stalled_awaits=" << s.stalled_awaits
+              << " squash_calls=" << s.squash_calls << " squash_cmds=" << s.squash_cmds
+              << " avg_squash=" << ratio(s.squash_cmds, s.squash_calls)
+              << " max_batch=" << s.max_batch;
+  }
 }
 
 void Connection::DispatchSingle(bool has_more, absl::FunctionRef<void()> invoke_cb,
@@ -1531,9 +1570,58 @@ auto Connection::ParseLoop() -> ParserStatus {
 
   ParserStatus parse_status = NEED_MORE;
 
-  do {
+  // Best-effort parse-ahead is bounded to at most pipeline_parse_ahead_max_reads top-up reads per
+  // ParseLoop call. Without this bound it kept reading while any byte was available, draining the
+  // whole in-flight pipeline (no I/O-compute overlap, recv syscalls exploded). Persisted across the
+  // `continue` re-parse below.
+  uint32_t pa_reads = 0;
+
+  while (true) {
     DCHECK_GT(io_buf_.InputLen(), 0u);
+    ++tmp_pa_stats_.parseloop_iters;  // TODO(remove): diagnostics
     parse_status = (this->*parse_func)(io_buf_);
+
+    // Parse-ahead (V2 only): the V2 loop is single-fiber (read -> parse -> squash -> repeat), so a
+    // squash batch is otherwise bounded by one read buffer (~capacity/value_size commands). V1
+    // decouples the reader (producer) from the squasher (consumer) and so accumulates much larger
+    // batches, which amortize the expensive *synchronous* remote-shard hops that squash performs.
+    // To close the gap, after each parse we opportunistically pull whatever the kernel already has
+    // (non-blocking, never sleeps) and re-parse, growing one batch before executing - up to
+    // kParseAheadMaxBatch commands or until TryRecv reports EAGAIN.
+    //
+    //   - Compact() (only needed when the buffer is full, AppendLen==0): relocate the unparsed
+    //     remainder to the front so the space freed by already-parsed commands becomes append room.
+    //     Parsing advances offs_ via ConsumeInput which frees the FRONT, but AppendBuffer writes at
+    //     the BACK - so a full buffer has zero append room until Compact moves the remainder.
+    //   - ReadPendingInput(force=true): non-blocking TryRecv into that room; EAGAIN -> stop.
+    //
+    // Best-effort, NOT drain-to-empty: capped at pipeline_parse_ahead_max_reads top-up reads
+    // (pa_reads). The unbounded form kept reading as long as any byte was available, so a p=N
+    // client made it drain the entire in-flight pipeline before executing - serializing network
+    // reads with execution (no overlap) and defeating kernel coalescing (each read grabbed a
+    // single ~MSS segment, exploding the recv syscall count). Capping the reads keeps this a light
+    // "grab whatever already pooled" step: we execute promptly even with fewer than N commands in,
+    // which is the intended best-effort behavior. We also stop early (fall through to execute) as
+    // soon as a top-up read returns no new bytes.
+    const bool pa_eligible = ioloop_v2_ && pipeline_parse_ahead_cached && parse_status != ERROR &&
+                             !recv_multishot_active_ && !IsOverPipelineLimit() &&
+                             pa_reads < pipeline_parse_ahead_max_reads_cached &&
+                             parsed_cmd_q_len_ < kParseAheadMaxBatch;
+    if (pa_eligible) {
+      if (io_buf_.AppendLen() == 0)
+        io_buf_.Compact();  // buffer full: reclaim consumed front space as append room
+      if (io_buf_.AppendLen() > 0) {
+        ++pa_reads;
+        ++tmp_pa_stats_.pa_attempts;  // TODO(remove): diagnostics
+        const size_t before = io_buf_.InputLen();
+        ReadPendingInput(/*from_proactor_cb=*/false, /*force=*/true);
+        if (io_buf_.InputLen() > before) {
+          ++tmp_pa_stats_.pa_read_hits;  // TODO(remove): diagnostics
+          continue;  // pulled already-available input; re-parse to grow the batch before executing
+        }
+        ++tmp_pa_stats_.pa_read_misses;  // TODO(remove): diagnostics
+      }
+    }
 
     // Execute/reply the commands parsed so far first, so a trailing protocol error still flushes
     // earlier replies in order before we report it.
@@ -1547,7 +1635,10 @@ auto Connection::ParseLoop() -> ParserStatus {
     // protocol error reply (using parser_error_) and close the connection.
     if (parse_status == ERROR)
       return ERROR;
-  } while (parse_status == OK && io_buf_.InputLen() > 0);
+
+    if (parse_status != OK || io_buf_.InputLen() == 0)
+      break;
+  }
 
   return parse_status;  // OK or NEED_MORE
 }
@@ -2701,6 +2792,14 @@ bool Connection::SquashPipelineV2() {
   conn_stats.squash_call_cnt++;
   conn_stats.squash_cmd_cnt += squashed;
   conn_stats.squash_batch_size_hist.Add(squashed);
+
+  local_stats_.cmds += squashed;
+
+  // TODO(remove): per-connection squash diagnostics.
+  ++tmp_pa_stats_.squash_calls;
+  tmp_pa_stats_.squash_cmds += squashed;
+  tmp_pa_stats_.max_batch = std::max<uint64_t>(tmp_pa_stats_.max_batch, squashed);
+
   DVLOG(2) << "[" << id_ << "] V2 squash " << squashed << " cmds";
   return true;
 }
@@ -2810,6 +2909,8 @@ bool Connection::ExecuteBatch() {
     conn_stats.pipeline_dispatch_commands++;
     if (is_head)
       conn_stats.pipeline_dispatch_calls++;
+    local_stats_.cmds++;
+    last_interaction_ = time(nullptr);
 
     if (cmd->IsDeferredReply()) {
       AdvanceToExecute();
@@ -2988,12 +3089,15 @@ void Connection::UpdateFromFlags() {
   always_flush_pipeline_cached = GetFlag(FLAGS_always_flush_pipeline);
   pipeline_squash_limit_cached = GetFlag(FLAGS_pipeline_squash_limit);
   pipeline_wait_batch_usec = GetFlag(FLAGS_pipeline_wait_batch_usec);
+  pipeline_parse_ahead_cached = GetFlag(FLAGS_pipeline_parse_ahead);
+  pipeline_parse_ahead_max_reads_cached = GetFlag(FLAGS_pipeline_parse_ahead_max_reads);
 }
 
 std::vector<std::string> Connection::GetMutableFlagNames() {
   return base::GetFlagNames(FLAGS_pipeline_queue_limit, FLAGS_pipeline_buffer_limit,
                             FLAGS_max_busy_read_usec, FLAGS_always_flush_pipeline,
-                            FLAGS_pipeline_squash_limit, FLAGS_pipeline_wait_batch_usec);
+                            FLAGS_pipeline_squash_limit, FLAGS_pipeline_wait_batch_usec,
+                            FLAGS_pipeline_parse_ahead, FLAGS_pipeline_parse_ahead_max_reads);
 }
 
 void Connection::GetRequestSizeHistogramThreadLocal(std::string* hist) {
@@ -3067,12 +3171,14 @@ void Connection::ProcessRecvNotification(const util::FiberSocketBase::RecvNotifi
     }
 
     pending_input_ = true;
+    input_stalled_ = false;  // fresh data is arriving; io_buf_ becomes actionable again
   } else if (std::holds_alternative<io::MutableBytes>(n.read_result)) {  // provided buffer.
     io::MutableBytes buf = std::get<io::MutableBytes>(n.read_result);
     {
       ReadBufTracker tracker(io_buf_);
       io_buf_.WriteAndCommit(buf.data(), buf.size());
     }
+    input_stalled_ = false;  // multishot delivered fresh bytes into io_buf_
     last_interaction_ = time(nullptr);
 
     DCHECK(tl_facade_stats);
@@ -3087,8 +3193,8 @@ void Connection::ProcessRecvNotification(const util::FiberSocketBase::RecvNotifi
   }
 }
 
-void Connection::ReadPendingInput(bool from_proactor_cb) {
-  if (!pending_input_)
+void Connection::ReadPendingInput(bool from_proactor_cb, bool force) {
+  if (!pending_input_ && !force)
     return;
 
   bool read_any = false;
@@ -3117,6 +3223,8 @@ void Connection::ReadPendingInput(bool from_proactor_cb) {
     DVLOG(1) << "Read " << *res << " bytes from socket";
 
     read_any = true;
+    // Fresh bytes appended: the io_buf_ is actionable again (clears any stuck-partial state).
+    input_stalled_ = false;
     auto& conn_stats = tl_facade_stats->conn_stats;
     size_t commit_sz = *res;
     conn_stats.io_read_bytes += commit_sz;
@@ -3180,6 +3288,8 @@ void Connection::MaybeEnableRecvMultishot() {
     if (up->BufRingEntrySize(kRecvSockGid) > 0 && !is_tls_) {
       static_cast<fb2::UringSocket*>(socket_.get())->EnableRecvMultishot();
       pending_input_ = false;
+      recv_multishot_active_ = true;
+      VLOG(1) << "Enabled recv multishot for connection " << id_ << " on thread ";
     }
   }
 #endif
@@ -3215,7 +3325,15 @@ bool Connection::HasControlEvent() const {
 bool Connection::ShouldWakeIdle() const {
   // TODO: optimize CanReply with looking up waiter key
   // io_buf_.InputLen() > 0 is still needed for multishot flow.
-
+  //
+  // NOTE: we intentionally treat ANY buffered input as a wake reason, even a partial command that
+  // last parsed as NEED_MORE. It is tempting to mask such a "stalled" partial so the fiber sleeps
+  // instead of re-parsing it, but parking on a partial deadlocks: the only wakeup is the proactor
+  // OnRecv callback firing io_event_.notify(), and after the fiber drains the socket itself via
+  // TryRecv (top-of-loop ReadPendingInput / parse-ahead) the async recv notification is not
+  // reliably armed - so the completing bytes (or the FIN on disconnect) never wake us and the
+  // connection hangs. Keeping the partial actionable makes the loop re-read via TryRecv directly.
+  //
   // On top of the control events, the idle park also wakes for incoming data and for a head command
   // that is now ready to run.
   return io_buf_.InputLen() > 0 || pending_input_ || HasCommandToExecute() || HasControlEvent();
@@ -3352,6 +3470,9 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoopV2() {
     // whole pipeline execute in-memory before a single sendmsg at the end.
     if (!ShouldWakeIdle()) {
       phase_ = READ_SOCKET;
+      ++tmp_pa_stats_.idle_awaits;  // TODO(remove): diagnostics
+      if (input_stalled_)
+        ++tmp_pa_stats_.stalled_awaits;  // TODO(remove): diagnostics
 
       // Flush replies deferred by ReplyBatch before sleeping - ensures the client gets its response
       // even when no more data arrives (single commands, end of pipeline).
@@ -3382,9 +3503,16 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoopV2() {
       if (over_limit)
         ParkOnBackpressure(&backpressure_waiter);
       parse_status = NEED_MORE;
+      // Not waiting on socket bytes here (queue is empty or memory-bound), so io_buf_ contents
+      // (if any) remain actionable for the next iteration.
+      input_stalled_ = false;
     } else {
       // Input available and under budget: parse, execute, reply.
       parse_status = RunParsePath();
+      // If parsing stopped on a partial (NEED_MORE) with the socket drained (no pending bytes),
+      // the leftover in io_buf_ is a stuck fragment. Mark it so the idle-await below sleeps
+      // instead of busy-spinning re-parsing it; cleared the instant fresh bytes are appended.
+      input_stalled_ = (parse_status == NEED_MORE) && !pending_input_ && io_buf_.InputLen() > 0;
     }
 
     if (reply_builder_->GetError()) {

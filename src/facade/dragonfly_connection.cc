@@ -2794,6 +2794,7 @@ bool Connection::SquashPipelineV2() {
   conn_stats.squash_batch_size_hist.Add(squashed);
 
   local_stats_.cmds += squashed;
+  last_interaction_ = time(nullptr);
 
   // TODO(remove): per-connection squash diagnostics.
   ++tmp_pa_stats_.squash_calls;

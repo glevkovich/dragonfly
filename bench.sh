@@ -27,7 +27,7 @@ Usage: ./bench_v2.sh [binary] [mode] [runs] [tag] [ver] [threads] [server_log_di
                 a file/symlink. This is intentional: benchmarks must be reproducible
                 and you must know exactly what binary you are running.
                 Default: ./build-opt/dragonfly
-  mode:         multi_conn | single_conn | pubsub | all (default: all)
+  mode:         multi_conn | single_conn | pubsub | conn | all (default: all)
   runs:         how many times to repeat the full benchmark (default: 3).
                 Must be a positive integer. If runs > 1, a final average report is printed.
   tag:          optional label for the log file.
@@ -177,6 +177,7 @@ Modes:
   multi_conn     - 50 clients, heavy saturation (command set by CMD env var).
   single_conn    - 1 client, isolates per-connection behavior (command set by CMD).
   pubsub         - 10 subscribers, PUBLISH fan-out.
+  conn           - multi_conn + single_conn (no pubsub).
   all            - Run all modes sequentially.
 
 Examples:
@@ -550,8 +551,8 @@ if ! _resolved=$(_resolve_binary "$SERVER_BIN"); then
 fi
 SERVER_BIN="$_resolved"
 case "$MODE" in
-    multi_conn|single_conn|pubsub|all) ;;
-    *) echo "[!] Error: mode must be one of: multi_conn | single_conn | pubsub | all. Got: '$MODE'"; exit 1 ;;
+    multi_conn|single_conn|pubsub|conn|all) ;;
+    *) echo "[!] Error: mode must be one of: multi_conn | single_conn | pubsub | conn | all. Got: '$MODE'"; exit 1 ;;
 esac
 if ! [[ "$RUNS" =~ ^[0-9]+$ ]] || [[ "$RUNS" -lt 1 ]]; then
     echo "[!] Error: runs must be a positive integer. Got: '$RUNS'"
@@ -1746,12 +1747,13 @@ run_selected_modes() {
         multi_conn)    run_multi_conn ;;
         single_conn)   run_single_conn ;;
         pubsub)        run_pubsub ;;
+        conn)          run_multi_conn; run_single_conn ;;
         all)           run_multi_conn; run_single_conn; run_pubsub ;;
     esac
 }
 
 case "$MODE" in
-    multi_conn|single_conn|pubsub|all)
+    multi_conn|single_conn|pubsub|conn|all)
         {
             for ((r=1; r<=RUNS; r++)); do
                 [[ $RUNS -gt 1 ]] && echo "" && echo "############## Run $r / $RUNS ##############"
@@ -1763,7 +1765,7 @@ case "$MODE" in
         ;;
     *)
         echo "Unknown mode: $MODE"
-        echo "Valid: multi_conn | single_conn | pubsub | all"
+        echo "Valid: multi_conn | single_conn | pubsub | conn | all"
         exit 1
         ;;
 esac

@@ -596,6 +596,15 @@ PIPELINE_FILTER=${PIPELINE:-""}
 CMD=${CMD:-"set"}
 BENCH_DURATION=${BENCH_DURATION:-15}
 
+# Value size in bytes. For single_conn/multi_conn this is memtier's -d (the SET
+# value size); for pubsub it is the published message length. Lets a batch line
+# sweep payload sizes (e.g. DATA_SIZE=256 vs DATA_SIZE=4096) without editing the
+# script. Default 2048 preserves prior single/multi behavior. _DATA_SIZE_EXPLICIT
+# records whether the caller set it, so pubsub keeps its historical 128-byte
+# message unless DATA_SIZE was given explicitly.
+_DATA_SIZE_EXPLICIT=${DATA_SIZE:+1}
+DATA_SIZE=${DATA_SIZE:-2048}
+
 # --- Keyspace bound (memtier --key-maximum) --------------------------------
 # Caps the number of distinct keys so the dataset stops growing once they are all
 # written. Without a bound, a write-only run (SET, --ratio=1:0) keeps inserting new
@@ -644,6 +653,10 @@ if [[ -z "${SERVER_METRICS_PORT:-}" ]]; then
 fi
 if [[ "$CMD" != "set" && "$CMD" != "zadd" ]]; then
     echo "[!] Error: CMD must be 'set' or 'zadd', got '$CMD'"
+    exit 1
+fi
+if ! [[ "$DATA_SIZE" =~ ^[0-9]+$ ]] || [[ "$DATA_SIZE" -lt 1 ]]; then
+    echo "[!] Error: DATA_SIZE must be a positive integer (bytes). Got: '$DATA_SIZE'"
     exit 1
 fi
 
@@ -1391,8 +1404,11 @@ run_pubsub_bench() {
     RESULTS_TMP=$(mktemp)
     echo -e "PIPELINE\tPUB_RPS\tP50(ms)\tSEND_SYSCALLS\tSUBSCRIBERS" > "$RESULTS_TMP"
 
-    local msg_payload
-    msg_payload=$(printf '%128s' | tr ' ' 'X')
+    local msg_payload _msg_bytes=128
+    # Honor an explicit DATA_SIZE for the pubsub payload; otherwise keep the
+    # historical 128-byte message so existing pubsub runs are unchanged.
+    [[ -n "$_DATA_SIZE_EXPLICIT" ]] && _msg_bytes=$DATA_SIZE
+    msg_payload=$(printf "%${_msg_bytes}s" | tr ' ' 'X')
 
     for PIPELINE in "${pipelines[@]}"; do
         echo "  [+] pipeline=$PIPELINE, subscribers=$num_subs ..."
@@ -1628,7 +1644,7 @@ run_multi_conn() {
             run_bench_custom false "$SERVER_TYPE" 2 25 "multi_conn_zadd" "${pipelines[@]}" \
                 -- --command="ZADD __key__ 1 __data__" --command-key-pattern=R -d 32
         else
-            run_bench false "$SERVER_TYPE" 2 25 2048 "multi_conn" "${pipelines[@]}"
+            run_bench false "$SERVER_TYPE" 2 25 $DATA_SIZE "multi_conn" "${pipelines[@]}"
         fi
         return
     fi
@@ -1647,11 +1663,11 @@ run_multi_conn() {
     else
         if [[ "$VER" != "v2" ]]; then
             _metrics_verified=0
-            run_bench false "V1" 2 25 2048 "multi_conn" "${pipelines[@]}"
+            run_bench false "V1" 2 25 $DATA_SIZE "multi_conn" "${pipelines[@]}"
         fi
         if [[ "$VER" != "v1" ]]; then
             _metrics_verified=0
-            run_bench true  "V2" 2 25 2048 "multi_conn" "${pipelines[@]}"
+            run_bench true  "V2" 2 25 $DATA_SIZE "multi_conn" "${pipelines[@]}"
         fi
     fi
 }
@@ -1671,7 +1687,7 @@ run_single_conn() {
             run_bench_custom false "$SERVER_TYPE" 1 1 "single_conn_zadd" "${pipelines[@]}" \
                 -- --command="ZADD __key__ 1 __data__" --command-key-pattern=R -d 32
         else
-            run_bench false "$SERVER_TYPE" 1 1 2048 "single_conn" "${pipelines[@]}"
+            run_bench false "$SERVER_TYPE" 1 1 $DATA_SIZE "single_conn" "${pipelines[@]}"
         fi
         return
     fi
@@ -1690,11 +1706,11 @@ run_single_conn() {
     else
         if [[ "$VER" != "v2" ]]; then
             _metrics_verified=0
-            run_bench false "V1" 1 1 2048 "single_conn" "${pipelines[@]}"
+            run_bench false "V1" 1 1 $DATA_SIZE "single_conn" "${pipelines[@]}"
         fi
         if [[ "$VER" != "v1" ]]; then
             _metrics_verified=0
-            run_bench true  "V2" 1 1 2048 "single_conn" "${pipelines[@]}"
+            run_bench true  "V2" 1 1 $DATA_SIZE "single_conn" "${pipelines[@]}"
         fi
     fi
 }

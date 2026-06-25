@@ -412,7 +412,11 @@ class Connection : public util::Connection {
   // If add is true, stats are incremented, otherwise decremented.
   void UpdateDispatchStats(const MessageHandle& msg, bool add);
 
-  ParserStatus ParseRedis(base::IoBuf& buf, uint32_t max_busy_cycles, bool enqueue_only = false);
+  // allow_yield=false disables the periodic ThisFiber::Yield() inside the parse loop. It MUST be
+  // passed false when called from a proactor callback (OnRecvNotification), which runs on the
+  // proactor and must never suspend the connection fiber.
+  ParserStatus ParseRedis(base::IoBuf& buf, uint32_t max_busy_cycles, bool enqueue_only = false,
+                          bool allow_yield = true);
 
   void OnBreakCb(int32_t mask);
 
@@ -716,6 +720,11 @@ class Connection : public util::Connection {
     // measured identically in V1 and V2. Divide by squash_calls / squash_cmds to compare the
     // per-batch and per-command squash cost between the two loops at the same batch size.
     uint64_t squash_dispatch_usec = 0;  // cumulative usec inside DispatchSquashedBatch
+
+    // Parse-in-proactor (V2): parses performed from the OnRecv callback while the fiber was
+    // blocked in a squash hop, and how many commands they enqueued (the batch growth bought).
+    uint64_t proactor_parse_calls = 0;
+    uint64_t proactor_parse_cmds = 0;
   } tmp_pa_stats_;
 
   std::unique_ptr<SinkReplyBuilder> reply_builder_;

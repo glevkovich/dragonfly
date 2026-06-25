@@ -1378,27 +1378,51 @@ void Connection::ConnectionFlow() {
   if (ioloop_v2_ && local_stats_.cmds > 0) {
     const auto& s = tmp_pa_stats_;
     auto ratio = [](double a, double b) { return b > 0 ? a / b : 0.0; };
-    LOG(INFO) << "[conn " << id_ << "] PA-DIAG"
-              << " cmds=" << local_stats_.cmds << " reads=" << local_stats_.read_cnt
-              << " net_in=" << local_stats_.net_bytes_in
-              << " bytes_per_read=" << ratio(local_stats_.net_bytes_in, local_stats_.read_cnt)
-              << " parseloop_iters=" << s.parseloop_iters
-              << " cmds_per_iter=" << ratio(local_stats_.cmds, s.parseloop_iters)
-              << " pa_attempts=" << s.pa_attempts << " pa_hits=" << s.pa_read_hits
-              << " pa_misses=" << s.pa_read_misses
-              << " pa_hit_rate=" << ratio(s.pa_read_hits, s.pa_attempts)
-              << " idle_awaits=" << s.idle_awaits << " stalled_awaits=" << s.stalled_awaits
-              << " squash_calls=" << s.squash_calls << " squash_cmds=" << s.squash_cmds
-              << " avg_squash=" << ratio(s.squash_cmds, s.squash_calls)
-              << " max_batch=" << s.max_batch;
+    auto [p50, p90, p99, p999] = s.read_size_hist.Percentiles(50, 90, 99, 99.9);
+    LOG(WARNING) << "[conn " << id_ << "] PA-DIAG"
+                 << " cmds=" << local_stats_.cmds << " reads=" << local_stats_.read_cnt
+                 << " net_in=" << local_stats_.net_bytes_in
+                 << " bytes_per_read=" << ratio(local_stats_.net_bytes_in, local_stats_.read_cnt)
+                 << " parseloop_iters=" << s.parseloop_iters
+                 << " cmds_per_iter=" << ratio(local_stats_.cmds, s.parseloop_iters)
+                 << " pa_attempts=" << s.pa_attempts << " pa_hits=" << s.pa_read_hits
+                 << " pa_misses=" << s.pa_read_misses
+                 << " pa_hit_rate=" << ratio(s.pa_read_hits, s.pa_attempts)
+                 << " idle_awaits=" << s.idle_awaits << " stalled_awaits=" << s.stalled_awaits
+                 << " squash_calls=" << s.squash_calls << " squash_cmds=" << s.squash_cmds
+                 << " avg_squash=" << ratio(s.squash_cmds, s.squash_calls)
+                 << " max_batch=" << s.max_batch << " read_calls=" << s.read_calls
+                 << " avg_read_interval_usec=" << ratio(s.read_interval_usec, s.read_calls)
+                 << " read_eagain=" << s.read_eagain_cnt << " rpi_calls=" << s.rpi_calls
+                 << " parse_calls=" << s.parse_calls
+                 << " avg_parse_interval_usec=" << ratio(s.parse_interval_usec, s.parse_calls)
+                 << " parse_need_more=" << s.parse_need_more_cnt
+                 << " avg_squash_disp_call_usec=" << ratio(s.squash_dispatch_usec, s.squash_calls)
+                 << " avg_squash_disp_cmd_usec=" << ratio(s.squash_dispatch_usec, s.squash_cmds)
+                 << " pread_idle=" << s.pread_idle << " pread_squash=" << s.pread_squash
+                 << " pread_parse=" << s.pread_parse << " pread_other=" << s.pread_other
+                 << " read_size_p50=" << p50 << " p90=" << p90 << " p99=" << p99
+                 << " p999=" << p999;
   } else if (!ioloop_v2_ && local_stats_.cmds > 0) {
     // V1 close summary, mirrors PA-DIAG so V1 and V2 can be compared side by side.
+    const auto& s = tmp_pa_stats_;
     auto ratio = [](double a, double b) { return b > 0 ? a / b : 0.0; };
-    LOG(INFO) << "[conn " << id_ << "] V1-DIAG"
-              << " cmds=" << local_stats_.cmds << " reads=" << local_stats_.read_cnt
-              << " net_in=" << local_stats_.net_bytes_in
-              << " bytes_per_read=" << ratio(local_stats_.net_bytes_in, local_stats_.read_cnt)
-              << " dispatch_entries=" << local_stats_.dispatch_entries_added;
+    auto [p50, p90, p99, p999] = s.read_size_hist.Percentiles(50, 90, 99, 99.9);
+    LOG(WARNING) << "[conn " << id_ << "] V1-DIAG"
+                 << " cmds=" << local_stats_.cmds << " reads=" << local_stats_.read_cnt
+                 << " net_in=" << local_stats_.net_bytes_in
+                 << " bytes_per_read=" << ratio(local_stats_.net_bytes_in, local_stats_.read_cnt)
+                 << " dispatch_entries=" << local_stats_.dispatch_entries_added
+                 << " read_calls=" << s.read_calls
+                 << " avg_read_interval_usec=" << ratio(s.read_interval_usec, s.read_calls)
+                 << " read_eagain=" << s.read_eagain_cnt << " hrs_calls=" << s.hrs_calls
+                 << " parse_calls=" << s.parse_calls
+                 << " avg_parse_interval_usec=" << ratio(s.parse_interval_usec, s.parse_calls)
+                 << " parse_need_more=" << s.parse_need_more_cnt
+                 << " avg_squash_disp_call_usec=" << ratio(s.squash_dispatch_usec, s.squash_calls)
+                 << " avg_squash_disp_cmd_usec=" << ratio(s.squash_dispatch_usec, s.squash_cmds)
+                 << " read_size_p50=" << p50 << " p90=" << p90 << " p99=" << p99
+                 << " p999=" << p999;
   }
 }
 
@@ -1552,7 +1576,9 @@ Connection::ParserStatus Connection::ParseRedis(base::IoBuf& io_buf, uint32_t ma
     // we want to yield to allow AsyncFiber to actually execute on the pending pipeline.
     if (ThisFiber::GetRunningTimeCycles() > max_busy_cycles) {
       GetLocalConnStats().num_read_yields++;
+      fiber_spot_ = FiberSpot::kParseYield;  // attribute proactor reads landing during this yield
       ThisFiber::Yield();
+      fiber_spot_ = FiberSpot::kRun;
     }
   } while (RespSrvParser::OK == result && !read_buffer.empty() && !reply_builder_->GetError());
 
@@ -1599,6 +1625,17 @@ auto Connection::ParseLoop() -> ParserStatus {
   while (true) {
     DCHECK_GT(io_buf_.InputLen(), 0u);
     ++tmp_pa_stats_.parseloop_iters;  // TODO(remove): diagnostics
+
+    // Track inter-parse intervals: how often we enter a parse pass (both V1 and V2).
+    {
+      uint64_t now = CycleClock::Now();
+      if (tmp_pa_stats_.last_parse_cycle != 0)
+        tmp_pa_stats_.parse_interval_usec +=
+            CycleClock::ToUsec(now - tmp_pa_stats_.last_parse_cycle);
+      tmp_pa_stats_.last_parse_cycle = now;
+      ++tmp_pa_stats_.parse_calls;
+    }
+
     parse_status = (this->*parse_func)(io_buf_);
 
     // Parse-ahead (V2 only): the V2 loop is single-fiber (read -> parse -> squash -> repeat), so a
@@ -1656,8 +1693,11 @@ auto Connection::ParseLoop() -> ParserStatus {
     if (parse_status == ERROR)
       return ERROR;
 
-    if (parse_status != OK || io_buf_.InputLen() == 0)
+    if (parse_status != OK || io_buf_.InputLen() == 0) {
+      if (parse_status == NEED_MORE)
+        ++tmp_pa_stats_.parse_need_more_cnt;
       break;
+    }
   }
 
   return parse_status;  // OK or NEED_MORE
@@ -1765,6 +1805,7 @@ bool Connection::ProcessControlMessages(uint32_t quota) {
 
 io::Result<size_t> Connection::HandleRecvSocket() {
   phase_ = READ_SOCKET;
+  ++tmp_pa_stats_.hrs_calls;  // count every V1 blocking-read entry point call
   auto& conn_stats = tl_facade_stats->conn_stats;
 
   io::MutableBytes append_buf = io_buf_.AppendBuffer();
@@ -1784,6 +1825,14 @@ io::Result<size_t> Connection::HandleRecvSocket() {
 
     ++conn_stats.io_read_cnt;
     ++local_stats_.read_cnt;
+
+    // Track inter-read intervals for V1 diagnostics (same fields as V2).
+    uint64_t now = CycleClock::Now();
+    if (tmp_pa_stats_.last_read_cycle != 0)
+      tmp_pa_stats_.read_interval_usec += CycleClock::ToUsec(now - tmp_pa_stats_.last_read_cycle);
+    tmp_pa_stats_.last_read_cycle = now;
+    ++tmp_pa_stats_.read_calls;
+    tmp_pa_stats_.read_size_hist.Add(static_cast<double>(commit_sz));
   }
   return recv_sz;
 }
@@ -1811,17 +1860,30 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoop() {
       VLOG(1) << "[c" << id_ << "] V1-LOOP peer closed (recv=0)";
       break;
     }
-    VLOG(1) << "[c" << id_ << "] V1-RECV " << *recv_sz << "B input_len=" << io_buf_.InputLen()
+    VLOG(1) << "[c" << id_ << "] V1-READ " << *recv_sz << "B input_len=" << io_buf_.InputLen()
             << " append_len=" << io_buf_.AppendLen() << " cap=" << io_buf_.Capacity();
 
     phase_ = PROCESS;
     bool reached_capacity = io_buf_.AppendLen() == 0;
 
+    // Track parse entry for V1 Redis path. V1 Memcache goes through ParseLoop() which
+    // has its own tracking, but V1 Redis calls ParseRedis() directly and bypasses it.
+    // We always track here so both branches are counted uniformly in V1.
     if (redis_parser_) {
+      {
+        uint64_t now = CycleClock::Now();
+        if (tmp_pa_stats_.last_parse_cycle != 0)
+          tmp_pa_stats_.parse_interval_usec +=
+              CycleClock::ToUsec(now - tmp_pa_stats_.last_parse_cycle);
+        tmp_pa_stats_.last_parse_cycle = now;
+        ++tmp_pa_stats_.parse_calls;
+      }
       parse_status = ParseRedis(io_buf_, max_busy_read_cycles_cached);
+      if (parse_status == NEED_MORE)
+        ++tmp_pa_stats_.parse_need_more_cnt;
     } else {
       DCHECK(memcache_parser_);
-      parse_status = ParseLoop();
+      parse_status = ParseLoop();  // ParseLoop has its own parse_calls tracking inside
     }
     VLOG(1) << "[c" << id_ << "] V1-PARSE status=" << parse_status
             << " reached_cap=" << reached_capacity << " input_left=" << io_buf_.InputLen()
@@ -1918,8 +1980,10 @@ void Connection::SquashPipeline() {
   // It must be set before DispatchSquashedBatch, which can preempt on shard hops.
   cc_->async_dispatch = true;
 
+  uint64_t dispatch_start = CycleClock::Now();
   uint32_t squashed =
       service_->DispatchSquashedBatch(parsed_to_execute_, pipeline_count, cc_.get());
+  tmp_pa_stats_.squash_dispatch_usec += CycleClock::ToUsec(CycleClock::Now() - dispatch_start);
 
   // Nothing was squashed (the head command can't join a batch, e.g. MULTI/EXEC, EVAL,
   // subscribe, blocking, or unknown). Hand it off to regular dispatch without flushing or
@@ -1952,6 +2016,11 @@ void Connection::SquashPipeline() {
 
   local_stats_.cmds += squashed;
   last_interaction_ = time(nullptr);
+
+  // V1 squash diagnostics, mirrors V2 so the DIAG lines compare like-for-like.
+  ++tmp_pa_stats_.squash_calls;
+  tmp_pa_stats_.squash_cmds += squashed;
+  tmp_pa_stats_.max_batch = std::max<uint64_t>(tmp_pa_stats_.max_batch, squashed);
 
   // Flush if no new commands appeared while we dispatched. The released commands were already
   // subtracted from parsed_cmd_q_len_, so add them back for the comparison.
@@ -2821,8 +2890,11 @@ bool Connection::SquashPipelineV2() {
           << " pq_len=" << parsed_cmd_q_len_;
 
   uint64_t dispatch_start = CycleClock::Now();
+  fiber_spot_ = FiberSpot::kSquashHop;  // attribute proactor reads landing during the hop
   unsigned squashed =
       service_->DispatchSquashedBatch(parsed_to_execute_, dispatch_waiting_count_, cc_.get());
+  fiber_spot_ = FiberSpot::kRun;
+  tmp_pa_stats_.squash_dispatch_usec += CycleClock::ToUsec(CycleClock::Now() - dispatch_start);
 
   if (squashed == 0) {
     VLOG(1) << "[c" << id_ << "] V2-SQUASH nothing squashable (head not batchable)";
@@ -3215,7 +3287,7 @@ void Connection::OnRecvNotification(const util::FiberSocketBase::RecvNotificatio
           << " pending_input=" << pending_input_;
   ProcessRecvNotification(n);
   // Eagerly drain the socket while the fiber is suspended to prevent receive buffer starvation.
-  ReadPendingInput();
+  ReadPendingInput(true);
   io_event_.notify();
 }
 
@@ -3263,6 +3335,8 @@ void Connection::ReadPendingInput(bool from_proactor_cb, bool force) {
   if (!pending_input_ && !force)
     return;
 
+  ++tmp_pa_stats_.rpi_calls;  // count every entry that passed the guard
+
   bool read_any = false;
   // Drain available socket data into io_buf_.
   io::MutableBytes buf = io_buf_.AppendBuffer();
@@ -3275,6 +3349,7 @@ void Connection::ReadPendingInput(bool from_proactor_cb, bool force) {
       // TryRecv is non-blocking: it returns EAGAIN/EWOULDBLOCK when nothing is ready.
       if (ec == errc::resource_unavailable_try_again || ec == errc::operation_would_block) {
         pending_input_ = false;
+        ++tmp_pa_stats_.read_eagain_cnt;
         VLOG(1) << "[c" << id_ << "] V2-READ EAGAIN input_len=" << io_buf_.InputLen();
       } else {
         io_ec_ = ec;
@@ -3291,6 +3366,16 @@ void Connection::ReadPendingInput(bool from_proactor_cb, bool force) {
 
     VLOG(1) << "[c" << id_ << "] V2-READ " << *res << "B (TryRecv) from_cb=" << from_proactor_cb
             << " force=" << force;
+
+    // Track inter-read intervals for diagnostics (read_calls / read_interval_usec).
+    {
+      uint64_t now = CycleClock::Now();
+      if (tmp_pa_stats_.last_read_cycle != 0)
+        tmp_pa_stats_.read_interval_usec += CycleClock::ToUsec(now - tmp_pa_stats_.last_read_cycle);
+      tmp_pa_stats_.last_read_cycle = now;
+      ++tmp_pa_stats_.read_calls;
+      tmp_pa_stats_.read_size_hist.Add(static_cast<double>(*res));
+    }
 
     read_any = true;
     // Fresh bytes appended: the io_buf_ is actionable again (clears any stuck-partial state).
@@ -3310,8 +3395,24 @@ void Connection::ReadPendingInput(bool from_proactor_cb, bool force) {
 
   // Count reads issued from the proactor OnRecv callback (connection fiber suspended) that
   // actually harvested bytes - i.e. socket reads that overlapped command execution/reply.
-  if (from_proactor_cb && read_any)
+  // Attribute each to the fiber's suspension point so we can see WHERE the overlap happened.
+  if (from_proactor_cb && read_any) {
     ++GetLocalConnStats().proactor_reads;
+    switch (fiber_spot_) {
+      case FiberSpot::kIdleAwait:
+        ++tmp_pa_stats_.pread_idle;
+        break;
+      case FiberSpot::kSquashHop:
+        ++tmp_pa_stats_.pread_squash;
+        break;
+      case FiberSpot::kParseYield:
+        ++tmp_pa_stats_.pread_parse;
+        break;
+      default:
+        ++tmp_pa_stats_.pread_other;
+        break;
+    }
+  }
 }
 
 void Connection::CheckIoBufCapacity(bool reached_capacity, base::IoBuf* io_buf) {
@@ -3568,7 +3669,9 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoopV2() {
 
       VLOG(1) << "[c" << id_ << "] V2-IDLE sleep (flushed) input_len=" << io_buf_.InputLen()
               << " stalled=" << input_stalled_ << " inflight=" << HasInFlightCommands();
+      fiber_spot_ = FiberSpot::kIdleAwait;
       io_event_.await([this] { return ShouldWakeIdle(); });
+      fiber_spot_ = FiberSpot::kRun;
       VLOG(1) << "[c" << id_ << "] V2-IDLE wake input_len=" << io_buf_.InputLen()
               << " pending_input=" << pending_input_ << " dq=" << dispatch_q_.size()
               << " inflight=" << HasInFlightCommands();

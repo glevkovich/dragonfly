@@ -1,0 +1,109 @@
+# =============================================================================
+# ioloopv2_matrix.bench  --  batch matrix for: ./bench.sh --batch
+# =============================================================================
+# Pattern applied to EVERY run line below:
+#   mode = conn  -> single_conn + multi_conn (no pubsub)
+#   DATA_SIZE    -> 256 and 4096 bytes (one line each)
+#   PIPELINE     -> 1,10,100
+#   runs (arg 3) -> 3   (each (mode,pipeline) repeated 3x; averaged + variance-checked)
+#   threads (arg 6) -> 3 (pins server to cores 1-3, leaving core 0 for OS/NIC IRQs)
+#
+# Engine / knob selection is per line:
+#   ver=v1 -> --enable_resp_io_loop_v2=false  (V1 engine, no pip/pa flags)
+#   ver=v2 -> --enable_resp_io_loop_v2=true   (V2 engine) + EXTRA_SERVER_FLAGS:
+#       pip = --pipeline_parse_in_proactor      pa = --pipeline_parse_ahead
+#       v2 only  : pip=false pa=false
+#       v2 pip   : pip=true  pa=false
+#       v2 pa    : pip=false pa=true
+#       v2 pip+pa: pip=true  pa=true
+#
+# RUN IT (from the repo root, ON THE SERVER 172.31.30.209, passwordless SSH to client):
+#   SERVER_IP=172.31.30.209 CLIENT_IP=172.31.20.3 BATCH_RERUN_ON_VARIANCE=3 \
+#     ./bench.sh --batch ioloopv2_matrix.bench
+#
+# Logs land under ./bench_batch_ioloopv2_matrix_<timestamp>/ (per-run .log, server
+# logs, /metrics snapshots, and a top-level batch_run_*.log).
+# =============================================================================
+
+
+# #############################################################################
+# # GROUP 1 -- V1 baseline (--enable_resp_io_loop_v2=false)
+# #############################################################################
+
+# v1 | all modes | value=256B  | pipelines 1/10/100
+DATA_SIZE=256  PIPELINE=1,10,100 ./build-opt/dragonfly conn 3 v1_d256  v1 3
+# v1 | all modes | value=4096B | pipelines 1/10/100
+DATA_SIZE=4096 PIPELINE=1,10,100 ./build-opt/dragonfly conn 3 v1_d4096 v1 3
+
+
+# #############################################################################
+# # GROUP 2 -- V2 only: pip=false pa=false
+# #############################################################################
+
+# v2 only | all modes | value=256B  | pipelines 1/10/100
+DATA_SIZE=256  PIPELINE=1,10,100 EXTRA_SERVER_FLAGS='--pipeline_parse_in_proactor=false --pipeline_parse_ahead=false' ./build-opt/dragonfly conn 3 v2only_d256  v2 3
+# v2 only | all modes | value=4096B | pipelines 1/10/100
+DATA_SIZE=4096 PIPELINE=1,10,100 EXTRA_SERVER_FLAGS='--pipeline_parse_in_proactor=false --pipeline_parse_ahead=false' ./build-opt/dragonfly conn 3 v2only_d4096 v2 3
+
+
+# #############################################################################
+# # GROUP 3 -- V2 pip: parse-in-proactor only (pip=true pa=false)
+# #############################################################################
+
+# v2 pip | all modes | value=256B  | pipelines 1/10/100
+DATA_SIZE=256  PIPELINE=1,10,100 EXTRA_SERVER_FLAGS='--pipeline_parse_in_proactor=true --pipeline_parse_ahead=false' ./build-opt/dragonfly conn 3 v2pip_d256  v2 3
+# v2 pip | all modes | value=4096B | pipelines 1/10/100
+DATA_SIZE=4096 PIPELINE=1,10,100 EXTRA_SERVER_FLAGS='--pipeline_parse_in_proactor=true --pipeline_parse_ahead=false' ./build-opt/dragonfly conn 3 v2pip_d4096 v2 3
+
+
+# #############################################################################
+# # GROUP 4 -- V2 pa: parse-ahead only (pip=false pa=true)
+# #############################################################################
+
+# v2 pa | all modes | value=256B  | pipelines 1/10/100
+DATA_SIZE=256  PIPELINE=1,10,100 EXTRA_SERVER_FLAGS='--pipeline_parse_in_proactor=false --pipeline_parse_ahead=true' ./build-opt/dragonfly conn 3 v2pa_d256  v2 3
+# v2 pa | all modes | value=4096B | pipelines 1/10/100
+DATA_SIZE=4096 PIPELINE=1,10,100 EXTRA_SERVER_FLAGS='--pipeline_parse_in_proactor=false --pipeline_parse_ahead=true' ./build-opt/dragonfly conn 3 v2pa_d4096 v2 3
+
+
+# #############################################################################
+# # GROUP 5 -- V2 pip+pa: both on (pip=true pa=true)
+# #############################################################################
+
+# v2 pip+pa | all modes | value=256B  | pipelines 1/10/100
+DATA_SIZE=256  PIPELINE=1,10,100 EXTRA_SERVER_FLAGS='--pipeline_parse_in_proactor=true --pipeline_parse_ahead=true' ./build-opt/dragonfly conn 3 v2pippa_d256  v2 3
+# v2 pip+pa | all modes | value=4096B | pipelines 1/10/100
+DATA_SIZE=4096 PIPELINE=1,10,100 EXTRA_SERVER_FLAGS='--pipeline_parse_in_proactor=true --pipeline_parse_ahead=true' ./build-opt/dragonfly conn 3 v2pippa_d4096 v2 3
+
+
+# #############################################################################
+# # GROUP 6 (SIDE, LAST) -- Tune --pipeline_parse_ahead_max_reads on v2 pip+pa
+# #     (pip=true pa=true), sweeping max_reads = 1..5, each at value=256B & 4096B.
+# #     To run exactly 5 (one size only), comment out either the d256 or d4096 line
+# #     of each pair.
+# #############################################################################
+
+# v2 pip+pa max_reads=1 | all modes | value=256B  | pipelines 1/10/100
+DATA_SIZE=256  PIPELINE=1,10,100 EXTRA_SERVER_FLAGS='--pipeline_parse_in_proactor=true --pipeline_parse_ahead=true --pipeline_parse_ahead_max_reads=1' ./build-opt/dragonfly conn 3 v2pippa_mr1_d256  v2 3
+# v2 pip+pa max_reads=1 | all modes | value=4096B | pipelines 1/10/100
+DATA_SIZE=4096 PIPELINE=1,10,100 EXTRA_SERVER_FLAGS='--pipeline_parse_in_proactor=true --pipeline_parse_ahead=true --pipeline_parse_ahead_max_reads=1' ./build-opt/dragonfly conn 3 v2pippa_mr1_d4096 v2 3
+
+# v2 pip+pa max_reads=2 | all modes | value=256B  | pipelines 1/10/100
+DATA_SIZE=256  PIPELINE=1,10,100 EXTRA_SERVER_FLAGS='--pipeline_parse_in_proactor=true --pipeline_parse_ahead=true --pipeline_parse_ahead_max_reads=2' ./build-opt/dragonfly conn 3 v2pippa_mr2_d256  v2 3
+# v2 pip+pa max_reads=2 | all modes | value=4096B | pipelines 1/10/100
+DATA_SIZE=4096 PIPELINE=1,10,100 EXTRA_SERVER_FLAGS='--pipeline_parse_in_proactor=true --pipeline_parse_ahead=true --pipeline_parse_ahead_max_reads=2' ./build-opt/dragonfly conn 3 v2pippa_mr2_d4096 v2 3
+
+# v2 pip+pa max_reads=3 | all modes | value=256B  | pipelines 1/10/100
+DATA_SIZE=256  PIPELINE=1,10,100 EXTRA_SERVER_FLAGS='--pipeline_parse_in_proactor=true --pipeline_parse_ahead=true --pipeline_parse_ahead_max_reads=3' ./build-opt/dragonfly conn 3 v2pippa_mr3_d256  v2 3
+# v2 pip+pa max_reads=3 | all modes | value=4096B | pipelines 1/10/100
+DATA_SIZE=4096 PIPELINE=1,10,100 EXTRA_SERVER_FLAGS='--pipeline_parse_in_proactor=true --pipeline_parse_ahead=true --pipeline_parse_ahead_max_reads=3' ./build-opt/dragonfly conn 3 v2pippa_mr3_d4096 v2 3
+
+# v2 pip+pa max_reads=4 | all modes | value=256B  | pipelines 1/10/100
+DATA_SIZE=256  PIPELINE=1,10,100 EXTRA_SERVER_FLAGS='--pipeline_parse_in_proactor=true --pipeline_parse_ahead=true --pipeline_parse_ahead_max_reads=4' ./build-opt/dragonfly conn 3 v2pippa_mr4_d256  v2 3
+# v2 pip+pa max_reads=4 | all modes | value=4096B | pipelines 1/10/100
+DATA_SIZE=4096 PIPELINE=1,10,100 EXTRA_SERVER_FLAGS='--pipeline_parse_in_proactor=true --pipeline_parse_ahead=true --pipeline_parse_ahead_max_reads=4' ./build-opt/dragonfly conn 3 v2pippa_mr4_d4096 v2 3
+
+# v2 pip+pa max_reads=5 | all modes | value=256B  | pipelines 1/10/100
+DATA_SIZE=256  PIPELINE=1,10,100 EXTRA_SERVER_FLAGS='--pipeline_parse_in_proactor=true --pipeline_parse_ahead=true --pipeline_parse_ahead_max_reads=5' ./build-opt/dragonfly conn 3 v2pippa_mr5_d256  v2 3
+# v2 pip+pa max_reads=5 | all modes | value=4096B | pipelines 1/10/100
+DATA_SIZE=4096 PIPELINE=1,10,100 EXTRA_SERVER_FLAGS='--pipeline_parse_in_proactor=true --pipeline_parse_ahead=true --pipeline_parse_ahead_max_reads=5' ./build-opt/dragonfly conn 3 v2pippa_mr5_d4096 v2 3

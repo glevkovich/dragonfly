@@ -1393,7 +1393,7 @@ void Connection::ConnectionFlow() {
                  << " cmds=" << local_stats_.cmds << " reads=" << local_stats_.read_cnt
                  << " net_in=" << local_stats_.net_bytes_in
                  << " bytes_per_read=" << ratio(local_stats_.net_bytes_in, local_stats_.read_cnt)
-                 << " parseloop_iters=" << s.parseloop_iters
+                 << " io_buf_cap=" << io_buf_.Capacity() << " parseloop_iters=" << s.parseloop_iters
                  << " cmds_per_iter=" << ratio(local_stats_.cmds, s.parseloop_iters)
                  << " pa_attempts=" << s.pa_attempts << " pa_hits=" << s.pa_read_hits
                  << " pa_misses=" << s.pa_read_misses
@@ -1423,6 +1423,7 @@ void Connection::ConnectionFlow() {
                  << " cmds=" << local_stats_.cmds << " reads=" << local_stats_.read_cnt
                  << " net_in=" << local_stats_.net_bytes_in
                  << " bytes_per_read=" << ratio(local_stats_.net_bytes_in, local_stats_.read_cnt)
+                 << " io_buf_cap=" << io_buf_.Capacity()
                  << " dispatch_entries=" << local_stats_.dispatch_entries_added
                  << " read_calls=" << s.read_calls
                  << " avg_read_interval_usec=" << ratio(s.read_interval_usec, s.read_calls)

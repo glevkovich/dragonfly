@@ -1061,19 +1061,19 @@ verify_metrics_endpoint() {
 # ---------------------------------------------------------------------------
 # save_metrics_snapshot <label> <mode_name>
 # Fetches /metrics from the running server and writes it to METRICS_DIR.
-# File name mirrors the run log so the two can be matched:
-#   metrics_<tag>_<label>_<mode>_run<r>_<YYYYMMDD_HHMMSS>.prom
+# File name:
+#   metrics_<tag>_d<size>_p<pipes>_<label>_<mode>_run<r>_<ts>.prom
+# where <pipes> is the PIPELINE_FILTER (commas→hyphens, empty→"all").
 # METRICS_DIR is auto-set to BENCH_LOG_DIR in batch mode; set METRICS_DIR=off
-# to disable explicitly. Uses SERVER_METRICS_PORT, which bench.sh sets to the
-# main PORT for ok_backend (no separate admin port) and to ADMIN_PORT for
-# dragonfly/valkey (where /metrics lives on the admin HTTP endpoint).
+# to disable explicitly.
 # ---------------------------------------------------------------------------
 save_metrics_snapshot() {
     [[ -z "${METRICS_DIR:-}" || "${METRICS_DIR}" == "off" ]] && return
     local label=$1 mode_name=$2
     mkdir -p "$METRICS_DIR" 2>/dev/null || true
     local ts; ts=$(date +%Y%m%d_%H%M%S)
-    local fname="${METRICS_DIR}/metrics_${TAG:-${GIT_SHA}}_${label}_${mode_name}_run${r:-1}_${ts}.prom"
+    local _pstr; _pstr=$(echo "${PIPELINE_FILTER:-all}" | tr ',' '-')
+    local fname="${METRICS_DIR}/metrics_${TAG:-${GIT_SHA}}_d${DATA_SIZE}_p${_pstr}_${label}_${mode_name}_run${r:-1}_${ts}.prom"
     local _host; _host=${SERVER_IP:-127.0.0.1}
     local raw
     if raw=$(curl -sf --max-time 3 "http://${_host}:${SERVER_METRICS_PORT}/metrics" 2>/dev/null); then
@@ -1084,7 +1084,11 @@ save_metrics_snapshot() {
     fi
 }
 
+# stop_server [label] [mode_name]
+# Optional label and mode_name are used to build a descriptive server log filename.
+# When omitted (e.g. from the cleanup trap) the filename falls back to generic fields.
 stop_server() {
+    local _sv_label=${1:-} _sv_mode=${2:-}
     if [[ -n "$SERVER_PID" ]]; then
         kill "$SERVER_PID" 2>/dev/null || true
         local i=0
@@ -1100,12 +1104,19 @@ stop_server() {
         SERVER_PID=""
     fi
     if [[ -n "$SERVER_LOG_DIR" && -s "$SERVER_LOG" ]]; then
-        local save_name="server_${TAG:-${GIT_SHA}}_$(date +%Y%m%d_%H%M%S).log"
+        local ts; ts=$(date +%Y%m%d_%H%M%S)
+        local _pstr; _pstr=$(echo "${PIPELINE_FILTER:-all}" | tr ',' '-')
+        # Build descriptive filename: tag_d<size>_p<pipes>_label_mode_ts.log
+        local _parts="${TAG:-${GIT_SHA}}_d${DATA_SIZE}_p${_pstr}"
+        [[ -n "$_sv_label" ]] && _parts+="_${_sv_label}"
+        [[ -n "$_sv_mode"  ]] && _parts+="_${_sv_mode}"
+        _parts+="_${ts}"
+        local save_name="server_${_parts}.log"
         cp "$SERVER_LOG" "${SERVER_LOG_DIR}/${save_name}"
         echo "[*] Server log saved to ${SERVER_LOG_DIR}/${save_name}"
         : > "$SERVER_LOG"  # Truncate so cleanup doesn't duplicate.
     fi
-    sleep 0.6  # let OS release the TCP port
+    sleep 0.6 # let OS release the TCP port
 }
 
 start_server() {
@@ -1302,7 +1313,7 @@ run_bench() {
     done
 
     save_metrics_snapshot "$label" "$mode_name"
-    stop_server
+    stop_server "$label" "$mode_name"
 
     echo ""
     echo "====================================================="
@@ -1405,7 +1416,7 @@ run_bench_custom() {
     done
 
     save_metrics_snapshot "$label" "$mode_name"
-    stop_server
+    stop_server "$label" "$mode_name"
 
     echo ""
     echo "====================================================="
@@ -1526,7 +1537,7 @@ run_pubsub_bench() {
     done
 
     save_metrics_snapshot "$label" "$mode_name"
-    stop_server
+    stop_server "$label" "$mode_name"
 
     echo ""
     echo "====================================================="

@@ -725,6 +725,11 @@ class Connection : public util::Connection {
     // blocked in a squash hop, and how many commands they enqueued (the batch growth bought).
     uint64_t proactor_parse_calls = 0;
     uint64_t proactor_parse_cmds = 0;
+
+    // Parse-ahead buffer growth (V2): ParseLoop passes that saw the buffer full (reached_capacity)
+    // and, of those, how many actually enlarged io_buf_ via CheckIoBufCapacity.
+    uint64_t pa_reached_cap = 0;
+    uint64_t pa_grow_cnt = 0;
   } tmp_pa_stats_;
 
   std::unique_ptr<SinkReplyBuilder> reply_builder_;

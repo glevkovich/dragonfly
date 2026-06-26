@@ -129,8 +129,9 @@ ABSL_FLAG(uint32_t, pipeline_wait_batch_usec, 0,
 ABSL_FLAG(bool, pipeline_parse_ahead, false,
           "V2 only: before executing a parsed pipeline batch, opportunistically read and parse "
           "more already-available input (non-blocking, never waits) so the squash sees one large "
-          "batch instead of many small ones. Decouples squash batch size from the read buffer "
-          "size without growing the buffer.");
+          "batch instead of many small ones. When the read buffer fills mid-batch it is grown "
+          "(same policy as the main loop) so a steady pipeline batch settles into a single read "
+          "instead of being split across two recv() calls.");
 
 ABSL_FLAG(uint32_t, pipeline_parse_ahead_max_reads, 1,
           "V2 parse-ahead bound: max non-blocking top-up reads attempted per parse cycle before "
@@ -1659,10 +1660,15 @@ auto Connection::ParseLoop() -> ParserStatus {
     // (non-blocking, never sleeps) and re-parse, growing one batch before executing - up to
     // kParseAheadMaxBatch commands or until TryRecv reports EAGAIN.
     //
-    //   - Compact() (only needed when the buffer is full, AppendLen==0): relocate the unparsed
-    //     remainder to the front so the space freed by already-parsed commands becomes append room.
-    //     Parsing advances offs_ via ConsumeInput which frees the FRONT, but AppendBuffer writes at
-    //     the BACK - so a full buffer has zero append room until Compact moves the remainder.
+    //   - Full buffer (AppendLen==0): grow it via CheckIoBufCapacity, the SAME policy the main
+    //     IoLoopV2 uses on NEED_MORE. A full buffer is the reached-capacity signal that should
+    //     enlarge the buffer; parse-ahead would otherwise hide it (it used to just Compact and
+    //     re-read into the same-size buffer), pinning the buffer one power-of-2 below the batch
+    //     size and splitting every batch across two recv() calls forever. Only when we are already
+    //     at max_client_iobuf_len (cannot grow) do we Compact: slide the unparsed remainder to the
+    //     front so the consumed prefix becomes append room (parsing frees the FRONT via
+    //     ConsumeInput while AppendBuffer writes at the BACK, so a full buffer has zero append room
+    //     otherwise).
     //   - ReadPendingInput(force=true): non-blocking TryRecv into that room; EAGAIN -> stop.
     //
     // Best-effort, NOT drain-to-empty: capped at pipeline_parse_ahead_max_reads top-up reads
@@ -1680,8 +1686,15 @@ auto Connection::ParseLoop() -> ParserStatus {
         !recv_multishot_active_ && !IsOverPipelineLimit() &&
         pa_reads < pipeline_parse_ahead_max_reads_cached && parsed_cmd_q_len_ < kParseAheadMaxBatch;
     if (pa_eligible) {
-      if (io_buf_.AppendLen() == 0)
-        io_buf_.Compact();  // buffer full: reclaim consumed front space as append room
+      if (io_buf_.AppendLen() == 0) {
+        // Buffer full: grow it (same policy as IoLoopV2's CheckIoBufCapacity on NEED_MORE) so the
+        // batch settles into a single read instead of staying pinned and split. Fall back to
+        // Compact only when we cannot grow (already at max_client_iobuf_len), to still make
+        // progress by reclaiming the consumed front as append room.
+        CheckIoBufCapacity(/*reached_capacity=*/true, &io_buf_);
+        if (io_buf_.AppendLen() == 0)
+          io_buf_.Compact();
+      }
       if (io_buf_.AppendLen() > 0) {
         ++pa_reads;
         ++tmp_pa_stats_.pa_attempts;  // TODO(remove): diagnostics

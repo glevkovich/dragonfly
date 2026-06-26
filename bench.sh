@@ -456,7 +456,10 @@ run_batch_mode() {
                 echo "# [${idx}/${#run_lines[@]}] attempt ${attempt}/${_max_attempts}: ${line}"
                 echo "##########################################################################################"
                 run_out=$(mktemp)
-                env BENCH_LOG_DIR="$outdir" "${parsed_envs[@]}" bash "$self" "${parsed_args[@]}" 2>&1 | tee "$run_out"
+                # Pass the run's 1-based position in the batch so the child can label
+                # its AVERAGE RESULTS header with "Run idx/total".
+                env BENCH_LOG_DIR="$outdir" BATCH_RUN_INDEX="$idx" BATCH_RUN_TOTAL="${#run_lines[@]}" \
+                    "${parsed_envs[@]}" bash "$self" "${parsed_args[@]}" 2>&1 | tee "$run_out"
                 rc=${PIPESTATUS[0]}
 
                 if [[ $rc -ne 0 ]]; then
@@ -795,6 +798,10 @@ filter_pipelines() {
 # Global PID tracking for cleanup.
 SERVER_PID=""
 SUB_PIDS=()
+# Full server command string of the most recent start_server call. Printed in the
+# AVERAGE RESULTS header so each batch run's summary records exactly how the server
+# was launched (it is identical across all repeats of a single batch line).
+SERVER_CMD_STR=""
 
 cleanup() {
     local exit_code=$?
@@ -1121,6 +1128,7 @@ start_server() {
             read -ra _vk_extra <<< "$EXTRA_SERVER_FLAGS"
             vk_cmd+=("${_vk_extra[@]}")
         fi
+        SERVER_CMD_STR="${vk_cmd[*]}"
         echo "  [server cmd] ${vk_cmd[*]}"
         "${vk_cmd[@]}" > "$SERVER_LOG" 2>&1 &
         SERVER_PID=$!
@@ -1170,6 +1178,7 @@ start_server() {
         "${SERVER_MAXMEM_ARGS[@]}"
         "${log_flags[@]}"
         "${extra_flags[@]}")
+    SERVER_CMD_STR="${server_cmd[*]}"
     echo "  [server cmd] ${server_cmd[*]}"
     "${server_cmd[@]}" > "$SERVER_LOG" 2>&1 &
     SERVER_PID=$!
@@ -1585,9 +1594,18 @@ check_result_variance() {
 print_final_report() {
     [[ $RUNS -le 1 ]] && return
     echo ""
-    echo "======================================================"
-    echo "  AVERAGE RESULTS ($RUNS runs, commit: $GIT_SHA)"
-    echo "======================================================"
+    echo "######################################################################"
+    if [[ -n "${BATCH_RUN_INDEX:-}" ]]; then
+        echo "  AVERAGE RESULTS  ::  Run ${BATCH_RUN_INDEX}/${BATCH_RUN_TOTAL}  ::  tag=${TAG:-<none>}"
+    else
+        echo "  AVERAGE RESULTS  ::  tag=${TAG:-<none>}"
+    fi
+    echo "######################################################################"
+    echo "  commit=${GIT_SHA}  server_type=${SERVER_TYPE}  ver=${VER}  mode=${MODE}  runs=${RUNS}  threads=${PROACTOR_THREADS}"
+    echo "  data_size=${DATA_SIZE}B  pipelines=${PIPELINE_FILTER:-1,10,50,100}  cmd=${CMD}"
+    [[ -n "${EXTRA_SERVER_FLAGS:-}" ]] && echo "  extra_server_flags=${EXTRA_SERVER_FLAGS}"
+    echo "  server_cmd: ${SERVER_CMD_STR:-<unknown>}"
+    echo "######################################################################"
     awk -F'|' '
     {
         key = $1 SUBSEP $2 SUBSEP $3

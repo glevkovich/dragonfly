@@ -1725,7 +1725,7 @@ auto Connection::ParseLoop() -> ParserStatus {
         ++pa_reads;
         ++tmp_pa_stats_.pa_attempts;  // TODO(remove): diagnostics
         const size_t before = io_buf_.InputLen();
-        ReadPendingInput(/*from_proactor_cb=*/false, /*force=*/true);
+        ReadPendingInput(/*from_proactor_cb=*/false, /*force=*/false);
         if (io_buf_.InputLen() > before) {
           ++tmp_pa_stats_.pa_read_hits;  // TODO(remove): diagnostics
           continue;  // pulled already-available input; re-parse to grow the batch before executing

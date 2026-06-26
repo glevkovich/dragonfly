@@ -1413,8 +1413,10 @@ void Connection::ConnectionFlow() {
                  << " pread_idle=" << s.pread_idle << " pread_squash=" << s.pread_squash
                  << " pread_parse=" << s.pread_parse << " pread_other=" << s.pread_other
                  << " proactor_parse_calls=" << s.proactor_parse_calls
-                 << " proactor_parse_cmds=" << s.proactor_parse_cmds << " read_size_p50=" << p50
-                 << " p90=" << p90 << " p99=" << p99 << " p999=" << p999;
+                 << " proactor_parse_cmds=" << s.proactor_parse_cmds
+                 << " pa_reached_cap=" << s.pa_reached_cap << " pa_grow=" << s.pa_grow_cnt
+                 << " read_size_p50=" << p50 << " p90=" << p90 << " p99=" << p99
+                 << " p999=" << p999;
   } else if (!ioloop_v2_ && local_stats_.cmds > 0) {
     // V1 close summary, mirrors PA-DIAG so V1 and V2 can be compared side by side.
     const auto& s = tmp_pa_stats_;
@@ -1640,6 +1642,12 @@ auto Connection::ParseLoop() -> ParserStatus {
     DCHECK_GT(io_buf_.InputLen(), 0u);
     ++tmp_pa_stats_.parseloop_iters;  // TODO(remove): diagnostics
 
+    // Snapshot reached-capacity BEFORE parsing: true iff the read that delivered the bytes we are
+    // about to parse filled io_buf_ to the brim (AppendLen()==0). This is the same signal IoLoopV2
+    // keys its buffer growth on; we re-evaluate it here every pass because parse-ahead reads and
+    // refills the buffer between IoLoopV2 iterations (see the growth note after parse).
+    const bool reached_capacity = io_buf_.AppendLen() == 0;
+
     // Track inter-parse intervals: how often we enter a parse pass (both V1 and V2).
     {
       uint64_t now = CycleClock::Now();
@@ -1652,6 +1660,32 @@ auto Connection::ParseLoop() -> ParserStatus {
 
     parse_status = (this->*parse_func)(io_buf_);
 
+    // Buffer growth, mirroring IoLoopV2's `if (NEED_MORE) CheckIoBufCapacity(reached_capacity)`,
+    // but lifted INTO this loop so parse-ahead can't hide it. IoLoopV2 only grows after ParseLoop
+    // returns, keyed on the *final* parse_status; parse-ahead almost always makes that status OK
+    // (it reads the rest of the batch and re-parses), so IoLoopV2's grower is starved and the
+    // buffer stays pinned one power-of-2 below the batch size - exactly the cap=2048 vs batch=2950
+    // pin (parse_need_more=4 in the DIAG: NEED_MORE essentially never escapes). It also could not
+    // live inside the parse-ahead block below: that block is gated by pa_reads <
+    // pipeline_parse_ahead_max_reads, so on the very pass where the top-up read fills the buffer
+    // the gate is already closed and the grow was skipped. So grow here, every pass, on the same
+    // reached_capacity signal: if the read that fed this parse filled the buffer, the batch is
+    // bigger than the buffer - enlarge it. CheckIoBufCapacity only doubles WHILE reached_capacity
+    // holds, so it self-limits the instant the buffer outgrows a lone batch (which then no longer
+    // fills it). Gated exactly like pa_eligible's preconditions: parse-ahead on (with it off,
+    // IoLoopV2's own grower already works) and depth > 1 (keeps pipeline=1 on the existing IoLoopV2
+    // grow path so its buffer sizing - and the p=1 base parity - is unchanged).
+    if (ioloop_v2_ && pipeline_parse_ahead_cached && parsed_cmd_q_len_ > 1 && reached_capacity) {
+      ++tmp_pa_stats_.pa_reached_cap;  // TODO(remove): diagnostics
+      size_t cap_before = io_buf_.Capacity();
+      CheckIoBufCapacity(/*reached_capacity=*/true, &io_buf_);
+      if (io_buf_.Capacity() != cap_before) {
+        ++tmp_pa_stats_.pa_grow_cnt;  // TODO(remove): diagnostics
+        VLOG(1) << "[c" << id_ << "] V2-PA-BUFGROW cap " << cap_before << "->"
+                << io_buf_.Capacity();
+      }
+    }
+
     // Parse-ahead (V2 only): the V2 loop is single-fiber (read -> parse -> squash -> repeat), so a
     // squash batch is otherwise bounded by one read buffer (~capacity/value_size commands). V1
     // decouples the reader (producer) from the squasher (consumer) and so accumulates much larger
@@ -1660,15 +1694,12 @@ auto Connection::ParseLoop() -> ParserStatus {
     // (non-blocking, never sleeps) and re-parse, growing one batch before executing - up to
     // kParseAheadMaxBatch commands or until TryRecv reports EAGAIN.
     //
-    //   - Full buffer (AppendLen==0): grow it via CheckIoBufCapacity, the SAME policy the main
-    //     IoLoopV2 uses on NEED_MORE. A full buffer is the reached-capacity signal that should
-    //     enlarge the buffer; parse-ahead would otherwise hide it (it used to just Compact and
-    //     re-read into the same-size buffer), pinning the buffer one power-of-2 below the batch
-    //     size and splitting every batch across two recv() calls forever. Only when we are already
-    //     at max_client_iobuf_len (cannot grow) do we Compact: slide the unparsed remainder to the
-    //     front so the consumed prefix becomes append room (parsing frees the FRONT via
-    //     ConsumeInput while AppendBuffer writes at the BACK, so a full buffer has zero append room
-    //     otherwise).
+    //   - Append room: growth happens just above (per-pass, on reached_capacity), so by here the
+    //     buffer normally has room. The only time it is still full is when we are already at
+    //     max_client_iobuf_len (CheckIoBufCapacity could not grow); then Compact() slides the
+    //     unparsed remainder to the front so the consumed prefix becomes append room (parsing frees
+    //     the FRONT via ConsumeInput while AppendBuffer writes at the BACK, so a full buffer has
+    //     zero append room otherwise).
     //   - ReadPendingInput(force=true): non-blocking TryRecv into that room; EAGAIN -> stop.
     //
     // Best-effort, NOT drain-to-empty: capped at pipeline_parse_ahead_max_reads top-up reads
@@ -1686,15 +1717,10 @@ auto Connection::ParseLoop() -> ParserStatus {
         !recv_multishot_active_ && !IsOverPipelineLimit() &&
         pa_reads < pipeline_parse_ahead_max_reads_cached && parsed_cmd_q_len_ < kParseAheadMaxBatch;
     if (pa_eligible) {
-      if (io_buf_.AppendLen() == 0) {
-        // Buffer full: grow it (same policy as IoLoopV2's CheckIoBufCapacity on NEED_MORE) so the
-        // batch settles into a single read instead of staying pinned and split. Fall back to
-        // Compact only when we cannot grow (already at max_client_iobuf_len), to still make
-        // progress by reclaiming the consumed front as append room.
-        CheckIoBufCapacity(/*reached_capacity=*/true, &io_buf_);
-        if (io_buf_.AppendLen() == 0)
-          io_buf_.Compact();
-      }
+      // Buffer full and the growth above was a no-op (already at max_client_iobuf_len): reclaim the
+      // consumed front as append room so the top-up read still has somewhere to land.
+      if (io_buf_.AppendLen() == 0)
+        io_buf_.Compact();
       if (io_buf_.AppendLen() > 0) {
         ++pa_reads;
         ++tmp_pa_stats_.pa_attempts;  // TODO(remove): diagnostics

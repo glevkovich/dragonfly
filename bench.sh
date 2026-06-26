@@ -614,6 +614,16 @@ BENCH_DURATION=${BENCH_DURATION:-15}
 _DATA_SIZE_EXPLICIT=${DATA_SIZE:+1}
 DATA_SIZE=${DATA_SIZE:-2048}
 
+# DATA_SIZE may be a single value or a comma-separated list (like PIPELINE), e.g.
+# DATA_SIZE=256,4096 runs the whole matrix once per size. Parse into DATA_SIZES; the
+# scalar DATA_SIZE is then set to each value in turn by the main run loop, so every
+# existing "$DATA_SIZE" reference keeps working unchanged. DATA_SIZE_RAW preserves the
+# original list for the report header; DATA_SIZE_SUFFIX (set in the loop) is appended to
+# mode names when more than one size runs so per-size results never collide in reports.
+DATA_SIZE_RAW="$DATA_SIZE"
+IFS=',' read -ra DATA_SIZES <<< "$DATA_SIZE"
+DATA_SIZE_SUFFIX=""
+
 # --- Keyspace bound (memtier --key-maximum) --------------------------------
 # Caps the number of distinct keys so the dataset stops growing once they are all
 # written. Without a bound, a write-only run (SET, --ratio=1:0) keeps inserting new
@@ -664,10 +674,13 @@ if [[ "$CMD" != "set" && "$CMD" != "zadd" ]]; then
     echo "[!] Error: CMD must be 'set' or 'zadd', got '$CMD'"
     exit 1
 fi
-if ! [[ "$DATA_SIZE" =~ ^[0-9]+$ ]] || [[ "$DATA_SIZE" -lt 1 ]]; then
-    echo "[!] Error: DATA_SIZE must be a positive integer (bytes). Got: '$DATA_SIZE'"
-    exit 1
-fi
+for _ds in "${DATA_SIZES[@]}"; do
+    if ! [[ "$_ds" =~ ^[0-9]+$ ]] || [[ "$_ds" -lt 1 ]]; then
+        echo "[!] Error: DATA_SIZE must be a positive integer (bytes), or a comma-separated"
+        echo "    list of positive integers (e.g. 256,4096). Got: '$DATA_SIZE_RAW'"
+        exit 1
+    fi
+done
 
 # Validate env-provided args don't contain flags the script injects itself.
 _validate_no_injected_flags() {
@@ -1209,6 +1222,7 @@ run_bench() {
     local clients=$1; shift
     local data_size=$1; shift
     local mode_name=$1; shift
+    mode_name="${mode_name}${DATA_SIZE_SUFFIX:-}"  # per-size suffix so reports don't collide
     local pipelines=()
     while [[ $# -gt 0 && "$1" != "--" ]]; do
         pipelines+=("$1"); shift
@@ -1310,6 +1324,7 @@ run_bench_custom() {
     local threads=$1; shift
     local clients=$1; shift
     local mode_name=$1; shift
+    mode_name="${mode_name}${DATA_SIZE_SUFFIX:-}"  # per-size suffix so reports don't collide
     local pipelines=()
     while [[ $# -gt 0 && "$1" != "--" ]]; do
         pipelines+=("$1"); shift
@@ -1410,8 +1425,10 @@ run_pubsub_bench() {
     local num_subs=$1; shift
     local num_msgs=$1; shift
     local pipelines=("$@")
+    # Per-size suffix so multiple DATA_SIZE values don't collide in the report grouping.
+    local mode_name="pubsub${DATA_SIZE_SUFFIX:-}"
 
-    start_server "$v2_flag" "$label" "pubsub"
+    start_server "$v2_flag" "$label" "$mode_name"
 
     local target
     target=$(client_target)
@@ -1505,15 +1522,15 @@ run_pubsub_bench() {
         SUB_PIDS=()
 
         echo -e "${PIPELINE}\t${RPS}\t${PUB_P50}\t${SEND_DELTA}\t${num_subs}" >> "$RESULTS_TMP"
-        echo "${label}|pubsub|${PIPELINE}|${RPS}|N/A|${SEND_DELTA}|N/A|${PUB_P50}|N/A|N/A" >> "$ACCUM_FILE"
+        echo "${label}|${mode_name}|${PIPELINE}|${RPS}|N/A|${SEND_DELTA}|N/A|${PUB_P50}|N/A|N/A" >> "$ACCUM_FILE"
     done
 
-    save_metrics_snapshot "$label" "pubsub"
+    save_metrics_snapshot "$label" "$mode_name"
     stop_server
 
     echo ""
     echo "====================================================="
-    printf "  %-4s  %s  (commit: %s)\n" "$label" "pubsub" "$GIT_SHA"
+    printf "  %-4s  %s  (commit: %s)\n" "$label" "$mode_name" "$GIT_SHA"
     echo "====================================================="
     column -t -s $'\t' "$RESULTS_TMP"
     echo "====================================================="
@@ -1607,7 +1624,7 @@ print_final_report() {
     fi
     echo "######################################################################"
     echo "  commit=${GIT_SHA}  server_type=${SERVER_TYPE}  ver=${VER}  mode=${MODE}  runs=${RUNS}  threads=${PROACTOR_THREADS}"
-    echo "  data_size=${DATA_SIZE}B  pipelines=${PIPELINE_FILTER:-1,10,50,100}  cmd=${CMD}"
+    echo "  data_size=${DATA_SIZE_RAW}B  pipelines=${PIPELINE_FILTER:-1,10,50,100}  cmd=${CMD}"
     [[ -n "${EXTRA_SERVER_FLAGS:-}" ]] && echo "  extra_server_flags=${EXTRA_SERVER_FLAGS}"
     echo "  server_cmd: ${SERVER_CMD_STR:-<unknown>}"
     echo "######################################################################"
@@ -1780,7 +1797,16 @@ case "$MODE" in
         {
             for ((r=1; r<=RUNS; r++)); do
                 [[ $RUNS -gt 1 ]] && echo "" && echo "############## Run $r / $RUNS ##############"
-                run_selected_modes
+                for _ds in "${DATA_SIZES[@]}"; do
+                    DATA_SIZE="$_ds"
+                    if [[ ${#DATA_SIZES[@]} -gt 1 ]]; then
+                        DATA_SIZE_SUFFIX="_d${_ds}"
+                        echo "" && echo "------------- data_size=${_ds}B -------------"
+                    else
+                        DATA_SIZE_SUFFIX=""
+                    fi
+                    run_selected_modes
+                done
             done
             print_final_report
             print_all_stats

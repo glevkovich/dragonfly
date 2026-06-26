@@ -1672,7 +1672,7 @@ auto Connection::ParseLoop() -> ParserStatus {
     // "grab whatever already pooled" step: we execute promptly even with fewer than N commands in,
     // which is the intended best-effort behavior. We also stop early (fall through to execute) as
     // soon as a top-up read returns no new bytes.
-    const bool pa_eligible = ioloop_v2_ && pipeline_parse_ahead_cached && parse_status != ERROR &&
+    const bool pa_eligible = ioloop_v2_ && pipeline_parse_ahead_cached && parse_status == OK &&
                              !recv_multishot_active_ && !IsOverPipelineLimit() &&
                              pa_reads < pipeline_parse_ahead_max_reads_cached &&
                              parsed_cmd_q_len_ < kParseAheadMaxBatch;

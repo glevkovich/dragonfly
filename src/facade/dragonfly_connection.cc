@@ -1674,8 +1674,8 @@ auto Connection::ParseLoop() -> ParserStatus {
     // soon as a top-up read returns no new bytes.
     const bool pa_eligible =
         ioloop_v2_ && pipeline_parse_ahead_cached &&
-        (parse_status == OK ||
-         (parse_status == NEED_MORE && io_buf_.AppendLen() == 0 && parsed_cmd_q_len_ > 1)) &&
+        parsed_cmd_q_len_ > 1 &&  // only when a real pipeline is building
+        (parse_status == OK || (parse_status == NEED_MORE && io_buf_.AppendLen() == 0)) &&
         !recv_multishot_active_ && !IsOverPipelineLimit() &&
         pa_reads < pipeline_parse_ahead_max_reads_cached && parsed_cmd_q_len_ < kParseAheadMaxBatch;
     if (pa_eligible) {

@@ -353,6 +353,11 @@ run_batch_mode() {
     mkdir -p "$outdir" || { echo "[!] Error: cannot create output dir '${outdir}'."; exit 1; }
     outdir=$(cd "$outdir" && pwd) || { echo "[!] Error: cannot resolve output dir '${outdir}'."; exit 1; }
 
+    # Copy the bench/desc file into the output dir for reference (provenance), so a
+    # results folder is always self-contained and the exact run matrix is preserved.
+    cp -- "$desc_file" "$outdir/" 2>/dev/null \
+        || echo "[!] Warning: could not copy bench file '${desc_file}' into '${outdir}'."
+
     # --- Collect runnable lines (skip blanks and '#' comments) ---------------
     local -a run_lines=()
     local line trimmed

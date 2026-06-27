@@ -133,13 +133,6 @@ ABSL_FLAG(bool, pipeline_parse_ahead, false,
           "(same policy as the main loop) so a steady pipeline batch settles into a single read "
           "instead of being split across two recv() calls.");
 
-ABSL_FLAG(uint32_t, pipeline_parse_ahead_max_reads, 1,
-          "V2 parse-ahead bound: max non-blocking top-up reads attempted per parse cycle before "
-          "executing the batch. This makes parse-ahead best-effort instead of draining the entire "
-          "in-flight pipeline: it grabs whatever already pooled (raising the batch a little) but "
-          "executes promptly, preserving I/O-compute overlap and keeping recv syscalls low. "
-          "0 disables top-up reads even when pipeline_parse_ahead is set.");
-
 ABSL_FLAG(bool, pipeline_parse_in_proactor, false,
           "V2 only: while the connection fiber is blocked inside a squashed pipeline dispatch "
           "(cross-shard hop), parse newly-arrived socket bytes directly from the proactor OnRecv "
@@ -560,8 +553,6 @@ thread_local uint32_t max_busy_read_cycles_cached = UINT32_MAX;
 thread_local bool always_flush_pipeline_cached = absl::GetFlag(FLAGS_always_flush_pipeline);
 thread_local uint32_t pipeline_squash_limit_cached = absl::GetFlag(FLAGS_pipeline_squash_limit);
 thread_local bool pipeline_parse_ahead_cached = absl::GetFlag(FLAGS_pipeline_parse_ahead);
-thread_local uint32_t pipeline_parse_ahead_max_reads_cached =
-    absl::GetFlag(FLAGS_pipeline_parse_ahead_max_reads);
 thread_local bool pipeline_parse_in_proactor_cached =
     absl::GetFlag(FLAGS_pipeline_parse_in_proactor);
 
@@ -1632,12 +1623,6 @@ auto Connection::ParseLoop() -> ParserStatus {
 
   ParserStatus parse_status = NEED_MORE;
 
-  // Best-effort parse-ahead is bounded to at most pipeline_parse_ahead_max_reads top-up reads per
-  // ParseLoop call. Without this bound it kept reading while any byte was available, draining the
-  // whole in-flight pipeline (no I/O-compute overlap, recv syscalls exploded). Persisted across the
-  // `continue` re-parse below.
-  uint32_t pa_reads = 0;
-
   while (true) {
     DCHECK_GT(io_buf_.InputLen(), 0u);
     ++tmp_pa_stats_.parseloop_iters;  // TODO(remove): diagnostics
@@ -1665,16 +1650,13 @@ auto Connection::ParseLoop() -> ParserStatus {
     // returns, keyed on the *final* parse_status; parse-ahead almost always makes that status OK
     // (it reads the rest of the batch and re-parses), so IoLoopV2's grower is starved and the
     // buffer stays pinned one power-of-2 below the batch size - exactly the cap=2048 vs batch=2950
-    // pin (parse_need_more=4 in the DIAG: NEED_MORE essentially never escapes). It also could not
-    // live inside the parse-ahead block below: that block is gated by pa_reads <
-    // pipeline_parse_ahead_max_reads, so on the very pass where the top-up read fills the buffer
-    // the gate is already closed and the grow was skipped. So grow here, every pass, on the same
-    // reached_capacity signal: if the read that fed this parse filled the buffer, the batch is
-    // bigger than the buffer - enlarge it. CheckIoBufCapacity only doubles WHILE reached_capacity
-    // holds, so it self-limits the instant the buffer outgrows a lone batch (which then no longer
-    // fills it). Gated exactly like pa_eligible's preconditions: parse-ahead on (with it off,
-    // IoLoopV2's own grower already works) and depth > 1 (keeps pipeline=1 on the existing IoLoopV2
-    // grow path so its buffer sizing - and the p=1 base parity - is unchanged).
+    // pin (parse_need_more=4 in the DIAG: NEED_MORE essentially never escapes). So grow here,
+    // every pass, on the same reached_capacity signal: if the read that fed this parse filled the
+    // buffer, the batch is bigger than the buffer - enlarge it. CheckIoBufCapacity only doubles
+    // WHILE reached_capacity holds, so it self-limits the instant the buffer outgrows a lone batch
+    // (which then no longer fills it). Gated like pa_eligible's preconditions: parse-ahead on
+    // (with it off, IoLoopV2's own grower already works) and depth > 1 (keeps pipeline=1 on the
+    // existing IoLoopV2 grow path so its buffer sizing - and the p=1 base parity - is unchanged).
     if (ioloop_v2_ && pipeline_parse_ahead_cached && parsed_cmd_q_len_ > 1 && reached_capacity) {
       ++tmp_pa_stats_.pa_reached_cap;  // TODO(remove): diagnostics
       size_t cap_before = io_buf_.Capacity();
@@ -1686,43 +1668,25 @@ auto Connection::ParseLoop() -> ParserStatus {
       }
     }
 
-    // Parse-ahead (V2 only): the V2 loop is single-fiber (read -> parse -> squash -> repeat), so a
-    // squash batch is otherwise bounded by one read buffer (~capacity/value_size commands). V1
-    // decouples the reader (producer) from the squasher (consumer) and so accumulates much larger
-    // batches, which amortize the expensive *synchronous* remote-shard hops that squash performs.
-    // To close the gap, after each parse we opportunistically pull whatever the kernel already has
-    // (non-blocking, never sleeps) and re-parse, growing one batch before executing - up to
-    // kParseAheadMaxBatch commands or until TryRecv reports EAGAIN.
-    //
-    //   - Append room: growth happens just above (per-pass, on reached_capacity), so by here the
-    //     buffer normally has room. The only time it is still full is when we are already at
-    //     max_client_iobuf_len (CheckIoBufCapacity could not grow); then Compact() slides the
-    //     unparsed remainder to the front so the consumed prefix becomes append room (parsing frees
-    //     the FRONT via ConsumeInput while AppendBuffer writes at the BACK, so a full buffer has
-    //     zero append room otherwise).
-    //   - ReadPendingInput(force=true): non-blocking TryRecv into that room; EAGAIN -> stop.
-    //
-    // Best-effort, NOT drain-to-empty: capped at pipeline_parse_ahead_max_reads top-up reads
-    // (pa_reads). The unbounded form kept reading as long as any byte was available, so a p=N
-    // client made it drain the entire in-flight pipeline before executing - serializing network
-    // reads with execution (no overlap) and defeating kernel coalescing (each read grabbed a
-    // single ~MSS segment, exploding the recv syscall count). Capping the reads keeps this a light
-    // "grab whatever already pooled" step: we execute promptly even with fewer than N commands in,
-    // which is the intended best-effort behavior. We also stop early (fall through to execute) as
-    // soon as a top-up read returns no new bytes.
+    // Parse-ahead (V2 only): after each parse, opportunistically attempt ONE non-blocking top-up
+    // read if the kernel has flagged data ready (pending_input_==true). This is inherently a
+    // single-attempt boolean: with force=false, ReadPendingInput early-returns when pending_input_
+    // is false, so there is no point in attempting more than once per parse pass — a second attempt
+    // in the same pass would either be a no-op (EAGAIN already cleared pending_input_) or redundant
+    // (we loop back via `continue` on a hit anyway). A hit re-enters the top of this loop and may
+    // attempt again naturally if pending_input_ is still true.
     const bool pa_eligible =
         ioloop_v2_ && pipeline_parse_ahead_cached && pending_input_ &&
         parsed_cmd_q_len_ > 1 &&  // depth gate: keeps PA off pipeline=1 (fixes small-value buf pin)
         parse_status != ERROR &&  // fire on OK *and* NEED_MORE (incl. partial large values)
         !recv_multishot_active_ && !IsOverPipelineLimit() &&
-        pa_reads < pipeline_parse_ahead_max_reads_cached && parsed_cmd_q_len_ < kParseAheadMaxBatch;
+        parsed_cmd_q_len_ < kParseAheadMaxBatch;
     if (pa_eligible) {
       // Buffer full and the growth above was a no-op (already at max_client_iobuf_len): reclaim the
       // consumed front as append room so the top-up read still has somewhere to land.
       if (io_buf_.AppendLen() == 0)
         io_buf_.Compact();
       if (io_buf_.AppendLen() > 0) {
-        ++pa_reads;
         ++tmp_pa_stats_.pa_attempts;  // TODO(remove): diagnostics
         const size_t before = io_buf_.InputLen();
         ReadPendingInput(/*from_proactor_cb=*/false, /*force=*/false);
@@ -3288,7 +3252,6 @@ void Connection::UpdateFromFlags() {
   pipeline_squash_limit_cached = GetFlag(FLAGS_pipeline_squash_limit);
   pipeline_wait_batch_usec = GetFlag(FLAGS_pipeline_wait_batch_usec);
   pipeline_parse_ahead_cached = GetFlag(FLAGS_pipeline_parse_ahead);
-  pipeline_parse_ahead_max_reads_cached = GetFlag(FLAGS_pipeline_parse_ahead_max_reads);
   pipeline_parse_in_proactor_cached = GetFlag(FLAGS_pipeline_parse_in_proactor);
 }
 
@@ -3296,8 +3259,7 @@ std::vector<std::string> Connection::GetMutableFlagNames() {
   return base::GetFlagNames(FLAGS_pipeline_queue_limit, FLAGS_pipeline_buffer_limit,
                             FLAGS_max_busy_read_usec, FLAGS_always_flush_pipeline,
                             FLAGS_pipeline_squash_limit, FLAGS_pipeline_wait_batch_usec,
-                            FLAGS_pipeline_parse_ahead, FLAGS_pipeline_parse_ahead_max_reads,
-                            FLAGS_pipeline_parse_in_proactor);
+                            FLAGS_pipeline_parse_ahead, FLAGS_pipeline_parse_in_proactor);
 }
 
 void Connection::GetRequestSizeHistogramThreadLocal(std::string* hist) {

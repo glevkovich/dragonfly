@@ -1978,6 +1978,17 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoop() {
                   << io_buf_.Capacity();
         }
 
+        /* consider:
+         // If we got a partial request because iobuf was full, grow it up to
+        // a reasonable limit to save on Recv() calls.
+        if (reached_capacity && capacity < max_iobfuf_len) {
+          // Last io used most of the io_buf to the end.
+          ReadBufTracker tracker(io_buf_);
+          io_buf_.Reserve(std::min(max_iobfuf_len, capacity * 2));  // Valid growth range.
+          VLOG(1) << "[c" << id_ << "] V1-BUFGROW double cap " << capacity << "->"
+                  << io_buf_.Capacity();
+        }
+        */
         if (io_buf_.AppendLen() == 0U) {
           // it can happen with memcached but not for RedisParser, because RedisParser fully
           // consumes the passed buffer
@@ -3531,6 +3542,16 @@ void Connection::CheckIoBufCapacity(bool reached_capacity, base::IoBuf* io_buf) 
       ReadBufTracker tracker(*io_buf);
       io_buf->Reserve(capacity * 2);  // Valid growth range.
     }
+
+    /* consider:
+     // If we got a partial request because iobuf was full, grow it up to
+    // a reasonable limit to save on Recv() calls.
+    if (reached_capacity && capacity < max_io_buf_len) {
+      // Last io used most of the io_buf to the end.
+      ReadBufTracker tracker(*io_buf);
+      io_buf->Reserve(std::min(max_io_buf_len, capacity * 2));
+    }
+      */
 
     if (io_buf->AppendLen() == 0U) {
       // it can happen with memcached but not for RedisParser, because RedisParser fully

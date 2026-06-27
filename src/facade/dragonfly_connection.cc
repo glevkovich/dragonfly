@@ -1711,7 +1711,7 @@ auto Connection::ParseLoop() -> ParserStatus {
     // which is the intended best-effort behavior. We also stop early (fall through to execute) as
     // soon as a top-up read returns no new bytes.
     const bool pa_eligible =
-        ioloop_v2_ && pipeline_parse_ahead_cached &&
+        ioloop_v2_ && pipeline_parse_ahead_cached && pending_input_ &&
         parsed_cmd_q_len_ > 1 &&  // depth gate: keeps PA off pipeline=1 (fixes small-value buf pin)
         parse_status != ERROR &&  // fire on OK *and* NEED_MORE (incl. partial large values)
         !recv_multishot_active_ && !IsOverPipelineLimit() &&

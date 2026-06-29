@@ -146,6 +146,10 @@ runs:
           done
         fi
 
+        # TEMPORARY: only run the tests that failed under enable_resp_io_loop_v2=true.
+        # Remove this K_FILTER block (and the -k below) to restore the full suite.
+        K_FILTER="test_replicate_old_master or test_empty_hash_map_replicate_old_master or test_empty_hashmap_loading_bug or test_replicate_search_index_to_old_replica or test_v134_replica_crashes_v138_master_on_reconnect or test_blocking_command_pipeline_flush or test_client_pause_with_replica"
+
         # Exclude large tests unless explicitly requested
         if [[ "$FILTER" == "large" ]]; then
           : # keep as-is, run only large tests
@@ -158,13 +162,13 @@ runs:
         if [[ "${REGRESSION_JUNIT_KIND}" == 'epoll' ]]; then
           FILTER="$FILTER and not exclude_epoll"
           # Run only replication tests with epoll
-          timeout 80m pytest -m "$FILTER" --durations=10 --timeout=300 --color=yes \
+          timeout 80m pytest -m "$FILTER" -k "$K_FILTER" --durations=10 --timeout=300 --color=yes \
             --json-report --json-report-file=report.json \
             --junitxml="${JUNIT_DIR}/pytest-${REGRESSION_JUNIT_KIND}.xml" \
             dragonfly --df force_epoll=true $DF_RUNTIME_FLAGS --log-cli-level=INFO || code=$?
         else
           # Run only replication tests with iouring
-          timeout 80m pytest -m "$FILTER" --durations=10 --timeout=300 --color=yes \
+          timeout 80m pytest -m "$FILTER" -k "$K_FILTER" --durations=10 --timeout=300 --color=yes \
             --json-report --json-report-file=report.json \
             --junitxml="${JUNIT_DIR}/pytest-${REGRESSION_JUNIT_KIND}.xml" \
             dragonfly $DF_RUNTIME_FLAGS --log-cli-level=INFO || code=$?

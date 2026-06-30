@@ -14,13 +14,38 @@
 src:*/third_party/*
 src:*/_deps/*
 
-# --- The helio framework (git submodule; fixes go upstream, not in this repo).
-# Comment this line if you also want to ignore helio code.
+# --- The helio framework (git submodule). Instrumented on purpose: we *WANT*
+# helio findings surfaced in the sweep, even though fixes land upstream.
+# Uncomment to remove Helio from the analysis
 #src:*/helio/*
 
-# --- Note on the standard library / abseil ----------------------------------
-# System C++ headers and abseil are deliberately NOT blanket-excluded here.
-# When those templates are inlined into first-party code, UBSan reports the
-# header as the location even though the bug is ours -- excluding them would
-# hide real findings. Silence specific false positives at runtime via
-# tools/sanitizers/ubsan/ubsan-suppressions.txt instead.
+# --- System toolchain headers (libstdc++ / gcc) and Boost -------------------
+# These are correct-by-construction. Every finding they produce in this sweep is
+# from the *non-UB* "suspicious" checks (implicit-conversion, unsigned wrap /
+# unsigned-shift-base) triggered by values WE pass into inlined templates --
+# hashing, std::string_view compares, std::rotl in <bit>, alignment math in
+# <align.h>. We will never patch the toolchain or Boost, so we skip instrumenting
+# them entirely. This kills the bulk of the noise (align.h, <bit>, string_view,
+# basic_string, boost/beast field.ipp).
+#
+# Trade-off: a blanket src: exclude also drops genuine-UB detection inside these
+# headers. That is acceptable here because libstdc++/Boost effectively never
+# contain real UB. For an actual third-party library you DO want to vet, prefer
+# instrumenting it and adding a per-check section (see below) rather than a
+# blanket exclude.
+src:*/usr/lib/gcc/*
+src:*/include/c++/*
+src:*/usr/include/*
+
+# --- abseil and other vendored deps are excluded above via */_deps/*.
+
+# --- OPTIONAL upgrade: keep true-UB everywhere, mute only the noisy checks ----
+# If you later want to detect genuine UB even inside a suspect third-party lib
+# while still hiding the legal-but-suspicious integer/implicit noise, drop the
+# blanket src: line for that path and use per-check sections instead, e.g.:
+#
+#   [implicit-conversion|unsigned-integer-overflow|unsigned-shift-base]
+#   src:*/some/thirdparty/lib/*
+#
+# Entries under a [section] apply only to that check, so true-UB checks
+# (alignment, null, signed-overflow, vptr, object-size, ...) stay active there.

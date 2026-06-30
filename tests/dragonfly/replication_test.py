@@ -2205,12 +2205,29 @@ async def test_client_pause_with_replica(df_factory, df_seeder_factory):
     await asyncio.sleep(1)
     # block the seeder for 4 seconds
     await c_master.execute_command("client pause 4000 write")
+
+    # These counters are exempt from the "no writes during pause" check:
+    pause_exempt = ["cmdstat_info", "cmdstat_replconf", "cmdstat_multi"]
+
+    def writes(s):
+        return {k: v for k, v in s.items() if k not in pause_exempt}
+
+    # V2 supports truly overlapping in-flight commands: a write dispatched just before
+    # CLIENT PAUSE returns may still be completing on a shard thread. Poll up until write
+    # counters stop moving, then use that as the baseline.
+    # In V1 (serial dispatch, no overlap) the first read is already stable.
     stats = await c_master.info("CommandStats")
+    for _ in range(5):
+        await asyncio.sleep(0.02)
+        cur = await c_master.info("CommandStats")
+        if writes(cur) == writes(stats):
+            break
+        stats = cur
     await asyncio.sleep(0.5)
     stats_after_sleep = await c_master.info("CommandStats")
     # Check no commands are executed except info and replconf called from replica
     for cmd, cmd_stats in stats_after_sleep.items():
-        if cmd in ["cmdstat_info", "cmdstat_replconf", "cmdstat_multi"]:
+        if cmd in pause_exempt:
             continue
         assert stats[cmd] == cmd_stats, cmd
 

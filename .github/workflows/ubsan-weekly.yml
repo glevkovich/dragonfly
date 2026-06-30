@@ -210,24 +210,17 @@ jobs:
           cd ${GITHUB_WORKSPACE}/tests
           mkdir -p ${GITHUB_WORKSPACE}/build/ubsan-logs
           export DRAGONFLY_PATH="${GITHUB_WORKSPACE}/build/dragonfly"
-          # No halt_on_error -> dragonfly keeps running and logs every finding to file.
-          export UBSAN_OPTIONS="print_stacktrace=1:report_error_type=1:dedup_token_length=3:suppressions=${GITHUB_WORKSPACE}/tools/sanitizers/ubsan/ubsan-suppressions.txt:log_path=${GITHUB_WORKSPACE}/build/ubsan-logs/pytest"
+          # halt_on_error=0 keeps dragonfly alive so one run logs EVERY finding (max coverage).
+          # strip_path_prefix trims the workspace path so locations read as src/... and helio/...
+          export UBSAN_OPTIONS="halt_on_error=0:print_stacktrace=1:report_error_type=1:dedup_token_length=3:strip_path_prefix=${GITHUB_WORKSPACE}/:suppressions=${GITHUB_WORKSPACE}/tools/sanitizers/ubsan/ubsan-suppressions.txt:log_path=${GITHUB_WORKSPACE}/build/ubsan-logs/pytest"
           # Single, minimal pytest file. 'not large' skips the heavy stress cases.
           timeout 20m pytest -m "not large" --timeout=300 --color=yes dragonfly/connection_test.py
 
       - name: Publish UBSan findings to job summary
         if: always()
         run: |
-          logs="${GITHUB_WORKSPACE}/build/ubsan-logs"
-          {
-            echo "## UBSan findings (${{ matrix.arch }})"
-            echo ""
-            echo "Deduplicated \`runtime error\` lines from the connection_test.py run (count + location):"
-            echo ""
-            echo '```'
-            cat "$logs"/pytest.* 2>/dev/null | grep -i "runtime error" | sort | uniq -c | sort -rn | head -200 || echo "(none captured)"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          bash "${GITHUB_WORKSPACE}/tools/sanitizers/ubsan/summarize_findings.sh" \
+            "${GITHUB_WORKSPACE}/build/ubsan-logs" "${{ matrix.arch }}" >> "$GITHUB_STEP_SUMMARY"
 
       # Job verdict: PASS only if the connection_test.py run produced NO first-party
       # UBSan findings. Third-party / std-library locations are excluded (matches the

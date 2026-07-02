@@ -74,12 +74,13 @@ ROOT="$(pwd)"
 mkdir -p build-dbg/ubsan-logs
 cd tests
 DRAGONFLY_PATH="$ROOT/build-dbg/dragonfly" \
-UBSAN_OPTIONS="halt_on_error=0:print_stacktrace=1:report_error_type=1:dedup_token_length=3:strip_path_prefix=$ROOT/:suppressions=$ROOT/tools/sanitizers/ubsan/ubsan-suppressions.txt:log_path=$ROOT/build-dbg/ubsan-logs/pytest" \
+UBSAN_OPTIONS="halt_on_error=0:print_stacktrace=1:report_error_type=1:strip_path_prefix=$ROOT/:suppressions=$ROOT/tools/sanitizers/ubsan/ubsan-suppressions.txt:log_path=$ROOT/build-dbg/ubsan-logs/ubsan" \
   python3 -m pytest -m "not large" dragonfly/connection_test.py
 cd "$ROOT"
 ```
 
-UBSan writes `build-dbg/ubsan-logs/pytest.<pid>` files (one per dragonfly process).
+UBSan writes findings to `build-dbg/ubsan-logs/<suite>/<case>/ubsan.<pid>` — one
+folder per test (instance.py rewrites `log_path` so each test gets its own dir).
 
 ## Summarizing findings (`ubsan_summarize_findings.sh`)
 

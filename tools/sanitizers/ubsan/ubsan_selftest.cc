@@ -31,7 +31,6 @@
 //     halt_on_error=1             aborts on the first finding
 //     log_path=<dir>/prefix       writes diagnostics to <dir>/prefix.<pid>
 //     print_stacktrace=1          full symbolized stack per finding
-//     dedup_token_length=3        stable cross-run dedup token
 //     silence_unsigned_overflow=1 mutes case 8 (unsigned wrap)
 //     suppressions=<file>         skips entries in tools/sanitizers/ubsan/ubsan-suppressions.txt
 //

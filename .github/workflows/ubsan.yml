@@ -19,8 +19,9 @@ name: ubsan
 #      the real dragonfly binary, build with UBSan (-O1, strict), run it and
 #      assert that EVERY enabled check actually fires. This proves the toolchain
 #      + flags are live before we trust a "clean" run.
-#   2. RUN (informational): revert the patch, rebuild clean, run the tagged
-#      tests under UBSan, collecting all findings as artifacts for triage.
+#   2. RUN (informational): revert the patch, rebuild clean, run the pytest
+#      suite (minus 'large') under UBSan, collecting all findings as artifacts
+#      for triage.
 
 on:
   schedule:
@@ -179,8 +180,9 @@ jobs:
           echo "Reverted inject_ubsan_selftest.patch"
 
       # ----------------------------------------------------------------------
-      # Phase 2: run the UBSan-tagged tests (see conftest.py UBSAN_TEST_MODULES)
-      # under UBSan. Findings and per-test timings are collected to ubsan-logs and
+      # Phase 2: run the whole pytest suite (minus 'large') under UBSan. We do
+      # NOT curate a UBSan subset -- running everything shows the real failure
+      # surface. Findings and per-test timings are collected to ubsan-logs and
       # surfaced in the job summary; they do not fail the job (there are known
       # existing findings).
       # ----------------------------------------------------------------------
@@ -204,7 +206,7 @@ jobs:
 
       # Test pass/fail is intentionally NOT a gate here (handled separately).
       # continue-on-error lets the run proceed so we can evaluate UBSan findings.
-      - name: Run UBSan-tagged tests under UBSan
+      - name: Run tests under UBSan
         continue-on-error: true
         run: |
           cd ${GITHUB_WORKSPACE}/tests
@@ -216,13 +218,16 @@ jobs:
           # log_path (pytest.<test>.<seq>.<pid>) so PID reuse never overwrites a file, and
           # the summary aggregates findings from ALL tests together, per arch.
           export UBSAN_OPTIONS="halt_on_error=0:print_stacktrace=1:report_error_type=1:dedup_token_length=3:strip_path_prefix=${GITHUB_WORKSPACE}/:suppressions=${GITHUB_WORKSPACE}/tools/sanitizers/ubsan/ubsan-suppressions.txt:log_path=${GITHUB_WORKSPACE}/build/ubsan-logs/pytest"
-          # Marker-driven: run every test tagged 'ubsan_test', minus 'large'. Membership is
-          # centralized in tests/dragonfly/conftest.py (UBSAN_TEST_MODULES) -- no yml change.
+          # Run the WHOLE suite except tests tagged 'large' (too heavy for UBSan).
           # valkey_search needs separate setup and is excluded from collection.
+          # --continue-on-collection-errors: one un-importable module must not abort the
+          # entire session (that previously hid all results behind a single collection error).
           # --junitxml records per-test wall time + failure reason for the timing report
           # (it lands in ubsan-logs and is uploaded with the findings).
-          timeout 60m pytest -m "ubsan_test and not large" \
+          # Timeout is generous: the full suite under UBSan is much slower than a normal run.
+          timeout 110m pytest -m "not large" \
             --ignore=dragonfly/valkey_search --timeout=600 --color=yes \
+            --continue-on-collection-errors \
             --junitxml="${GITHUB_WORKSPACE}/build/ubsan-logs/ubsan-junit.xml" \
             dragonfly/
 

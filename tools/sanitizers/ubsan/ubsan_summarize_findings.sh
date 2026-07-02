@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Summarize UBSan findings from a connection_test.py run into GitHub-flavored
-# markdown, written to stdout. The workflow appends it to the job summary:
+# Summarize UBSan findings from a test run into GitHub-flavored markdown, written
+# to stdout. The workflow appends it to the job summary:
 #
 #   bash ubsan_summarize_findings.sh <ubsan-logs-dir> <arch> >> "$GITHUB_STEP_SUMMARY"
 #
@@ -36,6 +36,9 @@ raw="$(cat "${logs_dir}"/pytest.* 2>/dev/null | grep -i "runtime error:" || true
 # Output: BUCKET<TAB>KIND<TAB>file:line:col
 classify() {
   awk '
+    # Only real findings carry "runtime error:". Skipping everything else keeps
+    # empty / blank input from being miscounted as a bogus "other" finding.
+    !/runtime error:/ { next }
     {
       loc=$0; sub(/ runtime error:.*/, "", loc); sub(/^[ \t]+/, "", loc);
       low=tolower($0); b="UB"; k="other";
@@ -71,22 +74,19 @@ ub_total="$(count_bucket UB)"
 susp_total="$(count_bucket SUSP)"
 total=$(( ub_total + susp_total ))
 
-# --- Header + totals --------------------------------------------------------
-echo "## UBSan findings (${arch})"
-echo ""
-echo "**${total}** finding occurrence(s): **${ub_total}** undefined behavior, **${susp_total}** suspicious / defined-but-flagged."
-echo ""
-echo "Locations are deduplicated by file:line. **For the full symbolized stack traces, download the \`ubsan-logs-${arch}\` artifact** attached to this run."
-echo ""
-
+# --- Sections first (UB, then suspicious), totals as a footer ---------------
 emit_section() {
   local bucket="$1" total_n="$2"
   if [[ "${bucket}" == "UB" ]]; then
+    echo "## Undefined behaviors — ${total_n} occurrence(s) · ${arch}"
+    echo ""
     echo "> [!CAUTION]"
-    echo "> **Undefined behaviors — ${total_n} occurrence(s).** These are **real C++ undefined behavior**: the program violates the C++ standard, so the standard imposes **no requirements** on the result — the compiler may miscompile, crash, or silently corrupt data. These should be fixed. Reference: ${UB_LINK}"
+    echo "> These are **real C++ undefined behavior**: the program violates the C++ standard, so the standard imposes **no requirements** on the result — the compiler may miscompile, crash, or silently corrupt data. These should be fixed. Reference: ${UB_LINK}"
   else
+    echo "## Suspicious / defined-but-flagged — ${total_n} occurrence(s) · ${arch}"
+    echo ""
     echo "> [!WARNING]"
-    echo "> **Suspicious / defined-but-flagged — ${total_n} occurrence(s).** Well-defined behavior surfaced by the extra integer & implicit-conversion checks (unsigned wrap/shift/negation, narrowing conversions). Not C++ standard violations, but worth a look for unintended truncation / sign bugs."
+    echo "> Well-defined behavior surfaced by the extra integer & implicit-conversion checks (unsigned wrap/shift/negation, narrowing conversions). Not C++ standard violations, but worth a look for unintended truncation / sign bugs."
   fi
   echo ""
   if [[ "${total_n}" -eq 0 ]]; then
@@ -111,3 +111,9 @@ emit_section() {
 
 emit_section UB "${ub_total}"
 emit_section SUSP "${susp_total}"
+
+# --- Totals footer ----------------------------------------------------------
+echo "---"
+echo ""
+echo "**${total}** finding occurrence(s): **${ub_total}** undefined behavior, **${susp_total}** suspicious / defined-but-flagged. Locations are deduplicated by file:line. **For the full symbolized stack traces, download the \`ubsan-logs-${arch}\` artifact** attached to this run."
+echo ""

@@ -1,6 +1,6 @@
 # UndefinedBehaviorSanitizer suppression file for Dragonfly.
 #
-# Used by the scheduled weekly UBSan job (see .github/workflows/ubsan-weekly.yml)
+# Used by the scheduled UBSan job (see .github/workflows/ubsan.yml)
 # and for local runs:
 #
 #   UBSAN_OPTIONS="suppressions=$(pwd)/tools/sanitizers/ubsan/ubsan-suppressions.txt" ./build-dbg/dragonfly
@@ -31,7 +31,7 @@
 #   * Suppressions only apply to checks compiled in "recoverable" mode. Checks
 #     that abort (the default for some groups) are not suppressible at runtime;
 #     use -fno-sanitize-recover= / -fsanitize-recover= at compile time to control
-#     that, and prefer keeping everything recoverable for the weekly sweep.
+#     that, and prefer keeping everything recoverable for the run.
 #   * Keep this list EMPTY by default. Only add an entry with a one-line comment
 #     explaining (a) why the finding is benign and (b) a tracking issue link.
 #   * A growing suppression list is a smell: prefer fixing the narrowing/overflow

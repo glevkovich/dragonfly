@@ -143,6 +143,21 @@ _minio_proc = None
 _minio_data_dir = None
 
 
+# Test modules whose tests are enrolled in the UBSan CI job
+# (.github/workflows/ubsan.yml, selected with `-m "ubsan_test and not large"`).
+# Add a module basename here to include ALL of its tests under UBSan -- no need to
+# edit the test files themselves.
+UBSAN_TEST_MODULES = {"connection_test", "replication_test"}
+
+
+def pytest_collection_modifyitems(config, items):
+    """Centrally tag whole test modules with `ubsan_test` (see UBSAN_TEST_MODULES)."""
+    for item in items:
+        module_name = item.module.__name__.rsplit(".", 1)[-1]
+        if module_name in UBSAN_TEST_MODULES:
+            item.add_marker(pytest.mark.ubsan_test)
+
+
 # runs on pytest start
 def pytest_configure(config):
     global _minio_proc, _minio_data_dir

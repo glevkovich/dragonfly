@@ -1,4 +1,5 @@
 import dataclasses
+import itertools
 import logging
 import os
 import random
@@ -19,6 +20,10 @@ from redis.asyncio import RedisCluster as RedisCluster
 
 START_DELAY = 0.8
 START_GDB_DELAY = 5.0
+
+# Monotonic sequence used to give each sanitized dragonfly process a unique
+# UBSAN_OPTIONS log_path filename (avoids PID reuse clobbering logs across a run).
+_ubsan_log_seq = itertools.count()
 
 
 @dataclass
@@ -255,7 +260,7 @@ class DflyInstance:
             # are guranteed to run
             time.sleep(5)
             logging.debug(f"Unable to kill the process on port {self._port}")
-            logging.debug(f"INFO LOGS of DF are:")
+            logging.debug("INFO LOGS of DF are:")
             self.print_info_logs_to_debug_log()
             proc.kill()
             proc.communicate()
@@ -270,6 +275,29 @@ class DflyInstance:
         if self.proc is not None:
             self.proc.communicate(timeout=120)
             self.proc = None
+
+    def _ubsan_env(self):
+        """Child env with a per-instance UBSAN_OPTIONS log_path.
+
+        UBSan writes findings to `<log_path>.<pid>`; PIDs are reused over a long
+        run, so a shared log_path lets one process overwrite another's file and
+        lose findings. We rewrite just the filename to `pytest.<test>.<seq>` (same
+        folder, same "pytest." prefix the summary globs, plus the test name for
+        triage). Returns None on non-sanitized runs so Popen inherits os.environ.
+        """
+        opts = os.environ.get("UBSAN_OPTIONS", "")
+        if "log_path=" not in opts:
+            return None
+        parts = opts.split(":")
+        for i, part in enumerate(parts):
+            if part.startswith("log_path="):
+                base_dir = os.path.dirname(part[len("log_path=") :]) or "."
+                test_id = os.environ.get("PYTEST_CURRENT_TEST", "unknown").split(" (")[0]
+                test_id = "".join(c if c.isalnum() or c in "._-" else "_" for c in test_id)[:120]
+                parts[i] = f"log_path={base_dir}/pytest.{test_id}.{next(_ubsan_log_seq)}"
+        env = os.environ.copy()
+        env["UBSAN_OPTIONS"] = ":".join(parts)
+        return env
 
     def _start(self):
         if self.params.existing_port:
@@ -296,6 +324,7 @@ class DflyInstance:
             cwd=self.params.cwd,
             stdout=None if self.params.direct_output else subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            env=self._ubsan_env(),
         )
         logging.info(f"Starting {real_path} {' '.join(all_args)}, pid {self.proc.pid}")
 
@@ -514,7 +543,7 @@ class DflyInstanceFactory:
         for instance in self.instances:
             try:  # ioloop might be no longer running
                 await instance.close_clients()
-            except Exception as e:
+            except Exception:
                 pass
 
             try:

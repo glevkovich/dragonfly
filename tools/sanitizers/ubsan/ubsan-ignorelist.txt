@@ -15,12 +15,12 @@ src:*/third_party/*
 src:*/_deps/*
 
 # --- The helio framework (git submodule). Instrumented on purpose: we *WANT*
-# helio findings surfaced in the sweep, even though fixes land upstream.
+# helio findings surfaced in the run, even though fixes land upstream.
 # Uncomment to remove Helio from the analysis
 #src:*/helio/*
 
 # --- System toolchain headers (libstdc++ / gcc) and Boost -------------------
-# These are correct-by-construction. Every finding they produce in this sweep is
+# These are correct-by-construction. Every finding they produce in this run is
 # from the *non-UB* "suspicious" checks (implicit-conversion, unsigned wrap /
 # unsigned-shift-base) triggered by values WE pass into inlined templates --
 # hashing, std::string_view compares, std::rotl in <bit>, alignment math in

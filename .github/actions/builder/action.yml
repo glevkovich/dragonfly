@@ -43,7 +43,7 @@ inputs:
     default: ''
     type: string
   ubsan-strict:
-    description: "Enable extended UBSan checks (WITH_UBSAN_STRICT). Off by default; enable for sanitizer sweeps."
+    description: "Enable extended UBSan checks (WITH_UBSAN_STRICT). Off by default; enable for sanitizer runs."
     required: false
     default: 'OFF'
     type: string

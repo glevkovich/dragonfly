@@ -1,12 +1,12 @@
-name: ubsan-weekly
+name: ubsan
 
-# Weekly UndefinedBehaviorSanitizer sweep.
+# UndefinedBehaviorSanitizer run.
 #
-# Why a separate weekly job (and NOT in PRs):
+# Why a separate job (and NOT in PRs):
 #   The extended UBSan checks (implicit-conversion, integer, function, vptr,
 #   object-size) are noisy and currently have known findings, so running them
 #   per-PR would block unrelated work. We keep them out of PR CI entirely
-#   (the per-PR builder pins WITH_UBSAN_STRICT=OFF) and sweep weekly instead.
+#   (the per-PR builder pins WITH_UBSAN_STRICT=OFF) and run them on a schedule.
 #
 # Architecture matrix (x86_64 + aarch64):
 #   Several UBSan findings are architecture dependent -- e.g. `char` signedness
@@ -18,10 +18,9 @@ name: ubsan-weekly
 #   1. SELF-TEST (required): apply a patch that injects RunUbsanSelfTest() into
 #      the real dragonfly binary, build with UBSan (-O1, strict), run it and
 #      assert that EVERY enabled check actually fires. This proves the toolchain
-#      + flags are live before we trust a "clean" sweep.
-#   2. SWEEP (informational): revert the patch, rebuild clean, run the #7562
-#      regression test and the C++ unit tests under UBSan, collecting all
-#      findings as artifacts for triage.
+#      + flags are live before we trust a "clean" run.
+#   2. RUN (informational): revert the patch, rebuild clean, run the tagged
+#      tests under UBSan, collecting all findings as artifacts for triage.
 
 on:
   schedule:
@@ -33,7 +32,7 @@ permissions:
 
 jobs:
   ubsan:
-    name: UBSan sweep (${{ matrix.arch }})
+    name: UBSan (${{ matrix.arch }})
     strategy:
       fail-fast: false
       matrix:
@@ -99,7 +98,7 @@ jobs:
           # -O1 activates object-size; -Wno-error keeps clang's unused-arg warning non-fatal.
           cxx-flags: "-O1 -Wno-error=unused-command-line-argument"
           sanitizers: Sanitizers
-          with-asan: 'OFF'   # UBSan-only sweep: ASan would abort on the self-test's memory cases.
+          with-asan: 'OFF'   # UBSan-only run: ASan would abort on the self-test's memory cases.
           ubsan-strict: 'ON'
           with-aws: 'OFF'
           targets: dragonfly
@@ -180,9 +179,10 @@ jobs:
           echo "Reverted inject_ubsan_selftest.patch"
 
       # ----------------------------------------------------------------------
-      # Phase 2: run a single, minimal functional test (connection_test.py)
-      # under UBSan. Findings are collected to ubsan-logs and surfaced in the
-      # job summary; they do not fail the job (there are known existing ones).
+      # Phase 2: run the UBSan-tagged tests (see conftest.py UBSAN_TEST_MODULES)
+      # under UBSan. Findings and per-test timings are collected to ubsan-logs and
+      # surfaced in the job summary; they do not fail the job (there are known
+      # existing findings).
       # ----------------------------------------------------------------------
       - name: Finalize sanitized dragonfly (incremental, patch reverted)
         uses: ./.github/actions/builder
@@ -192,7 +192,7 @@ jobs:
           cxx-compiler: clang++
           cxx-flags: "-O1 -Wno-error=unused-command-line-argument"
           sanitizers: Sanitizers
-          with-asan: 'OFF'   # UBSan-only sweep.
+          with-asan: 'OFF'   # UBSan-only run.
           ubsan-strict: 'ON'
           with-aws: 'OFF'
           # Same build dir as phase 1 -- ninja only recompiles dfly_main.cc and
@@ -204,7 +204,7 @@ jobs:
 
       # Test pass/fail is intentionally NOT a gate here (handled separately).
       # continue-on-error lets the run proceed so we can evaluate UBSan findings.
-      - name: Run connection_test.py under UBSan
+      - name: Run UBSan-tagged tests under UBSan
         continue-on-error: true
         run: |
           cd ${GITHUB_WORKSPACE}/tests
@@ -212,17 +212,53 @@ jobs:
           export DRAGONFLY_PATH="${GITHUB_WORKSPACE}/build/dragonfly"
           # halt_on_error=0 keeps dragonfly alive so one run logs EVERY finding (max coverage).
           # strip_path_prefix trims the workspace path so locations read as src/... and helio/...
+          # Every dragonfly process logs to ONE folder; instance.py gives each its own
+          # log_path (pytest.<test>.<seq>.<pid>) so PID reuse never overwrites a file, and
+          # the summary aggregates findings from ALL tests together, per arch.
           export UBSAN_OPTIONS="halt_on_error=0:print_stacktrace=1:report_error_type=1:dedup_token_length=3:strip_path_prefix=${GITHUB_WORKSPACE}/:suppressions=${GITHUB_WORKSPACE}/tools/sanitizers/ubsan/ubsan-suppressions.txt:log_path=${GITHUB_WORKSPACE}/build/ubsan-logs/pytest"
-          # Single, minimal pytest file. 'not large' skips the heavy stress cases.
-          timeout 20m pytest -m "not large" --timeout=300 --color=yes dragonfly/connection_test.py
+          # Marker-driven: run every test tagged 'ubsan_test', minus 'large'. Membership is
+          # centralized in tests/dragonfly/conftest.py (UBSAN_TEST_MODULES) -- no yml change.
+          # valkey_search needs separate setup and is excluded from collection.
+          # --junitxml records per-test wall time + failure reason for the timing report
+          # (it lands in ubsan-logs and is uploaded with the findings).
+          timeout 60m pytest -m "ubsan_test and not large" \
+            --ignore=dragonfly/valkey_search --timeout=600 --color=yes \
+            --junitxml="${GITHUB_WORKSPACE}/build/ubsan-logs/ubsan-junit.xml" \
+            dragonfly/
 
       - name: Publish UBSan findings to job summary
         if: always()
         run: |
-          bash "${GITHUB_WORKSPACE}/tools/sanitizers/ubsan/summarize_findings.sh" \
+          bash "${GITHUB_WORKSPACE}/tools/sanitizers/ubsan/ubsan_summarize_findings.sh" \
             "${GITHUB_WORKSPACE}/build/ubsan-logs" "${{ matrix.arch }}" >> "$GITHUB_STEP_SUMMARY"
 
-      # Job verdict: PASS only if the connection_test.py run produced NO first-party
+      # Best-effort timing baseline: the latest successful regression-tests run
+      # uploads its pytest JUnit as junit-regression-* artifacts. Pull the most
+      # recent one so the report can flag tests that ran suspiciously fast under
+      # UBSan (= likely bailed early). Non-fatal: if it can't be fetched, the
+      # report simply omits the comparison. Swap the action if third-party
+      # actions are undesirable (e.g. `gh run download` with a pattern).
+      - name: Fetch regression JUnit timing baseline
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: regression-tests.yml
+          workflow_conclusion: success
+          branch: main
+          name: junit-regression-
+          name_is_regexp: true
+          path: ${{ github.workspace }}/build/regression-baseline
+          if_no_artifact_found: warn
+
+      - name: Publish test timings & failures to job summary
+        if: always()
+        run: |
+          python3 "${GITHUB_WORKSPACE}/tools/sanitizers/ubsan/ubsan_test_report.py" \
+            "${GITHUB_WORKSPACE}/build/ubsan-logs/ubsan-junit.xml" \
+            "${{ matrix.arch }}" \
+            "${GITHUB_WORKSPACE}/build/regression-baseline" >> "$GITHUB_STEP_SUMMARY" || true
+
+      # Job verdict: PASS only if the UBSan run produced NO first-party
       # UBSan findings. Third-party / std-library locations are excluded (matches the
       # ignore-list intent); triage those from the uploaded artifact if needed.
       # Informational-only: count and list findings but never fail the job.
@@ -237,7 +273,7 @@ jobs:
             | grep -v -E "_deps/|third_party/|/usr/" | sort -u || true)
           count=$(printf '%s' "$findings" | grep -c . || true)
           if [[ "$count" -gt 0 ]]; then
-            echo "::notice::UBSan found ${count} finding(s) (src/ + helio/) during connection_test.py -- informational, not a gate failure."
+            echo "::notice::UBSan found ${count} finding(s) (src/ + helio/) during the UBSan run -- informational, not a gate failure."
             printf '%s\n' "$findings"
           else
             echo "No UBSan findings in src/ or helio/."
@@ -255,4 +291,4 @@ jobs:
         if: failure() && github.ref == 'refs/heads/main'
         run: |
           job_link="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          echo "Weekly UBSan sweep (${{ matrix.arch }}) failed: ${job_link}"
+          echo "UBSan run (${{ matrix.arch }}) failed: ${job_link}"

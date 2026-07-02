@@ -2,7 +2,7 @@ UBSan self-test injection patch.
 
 Apply this patch to a sanitized dragonfly build to run RunUbsanSelfTest() at
 startup -- it triggers one example of every enabled UBSan check, then exits.
-Use it to verify that UBSan is live before trusting a clean sweep result.
+Use it to verify that UBSan is live before trusting a clean run result.
 
 This patch is NOT meant to be committed to the tree.
 

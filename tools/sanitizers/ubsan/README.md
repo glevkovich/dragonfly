@@ -56,3 +56,47 @@ git apply -R --whitespace=nowarn tools/sanitizers/ubsan/inject_ubsan_selftest.pa
 
 The extended (strict) checks come from `WITH_UBSAN_STRICT` and are Clang-only —
 GCC implements none of them.
+
+## Running UBSan locally
+
+The UBSan CI job (`.github/workflows/ubsan.yml`) does this automatically.
+To reproduce on your machine:
+
+```bash
+# 1. configure a UBSan (strict, -O1) clang build. -O1 is required for object-size.
+./helio/blaze.sh -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+  -DWITH_UBSAN=ON -DWITH_AWS=OFF -DWITH_GCP=OFF -DCMAKE_CXX_FLAGS="-O1"
+cd build-dbg && ninja dragonfly && cd ..
+
+# 2. run a functional test under UBSan, logging every finding to a file.
+#    halt_on_error=0 keeps the server alive so one run captures everything.
+ROOT="$(pwd)"
+mkdir -p build-dbg/ubsan-logs
+cd tests
+DRAGONFLY_PATH="$ROOT/build-dbg/dragonfly" \
+UBSAN_OPTIONS="halt_on_error=0:print_stacktrace=1:report_error_type=1:dedup_token_length=3:strip_path_prefix=$ROOT/:suppressions=$ROOT/tools/sanitizers/ubsan/ubsan-suppressions.txt:log_path=$ROOT/build-dbg/ubsan-logs/pytest" \
+  python3 -m pytest -m "not large" dragonfly/connection_test.py
+cd "$ROOT"
+```
+
+UBSan writes `build-dbg/ubsan-logs/pytest.<pid>` files (one per dragonfly process).
+
+## Summarizing findings (`ubsan_summarize_findings.sh`)
+
+`ubsan_summarize_findings.sh <logs-dir> <arch>` turns those `pytest.*` logs into a
+markdown report (the same one CI posts to the job summary): a total count, then
+two sections — **undefined behavior** (real C++ standard violations) and
+**suspicious / defined-but-flagged** (the noisy integer / implicit-conversion
+checks) — each grouped by check type, with locations deduplicated by file:line.
+
+```bash
+# render the report from a local run
+bash tools/sanitizers/ubsan/ubsan_summarize_findings.sh build-dbg/ubsan-logs local | less
+
+# or point it at logs downloaded from a CI run's ubsan-logs-<arch> artifact
+bash tools/sanitizers/ubsan/ubsan_summarize_findings.sh ./ubsan-logs-x86_64 x86_64 > findings.md
+```
+
+The summary lists headline + file:line only; for the **full symbolized stacks**
+read the `pytest.*` log files directly (or the uploaded `ubsan-logs-<arch>`
+artifact on CI).

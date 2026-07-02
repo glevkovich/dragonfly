@@ -4,7 +4,7 @@
 //   Prove that every UBSan check enabled in the build is actually live.
 //   Each case deliberately triggers ONE compile-time check. Run this against
 //   any sanitized dragonfly binary to verify the toolchain + flags are working
-//   before trusting a clean-sweep result.
+//   before trusting a clean run result.
 //
 //   Usage: apply tools/sanitizers/ubsan/inject_ubsan_selftest.patch, build
 //   dragonfly, then run ./dragonfly -- the patched binary runs RunUbsanSelfTest()
@@ -92,7 +92,7 @@ UBSAN_CASE void Case_ImplicitSignChange() {
 // --- Check #4: array-bounds (base: -fsanitize=undefined) ----------------------
 // Indexing past an array's declared extent. Caught recoverably by array-bounds.
 // (local-bounds is intentionally NOT enabled: it traps with SIGILL and cannot be
-// made recoverable, which would abort the rest of the sweep.)
+// made recoverable, which would abort the rest of the run.)
 UBSAN_CASE void Case_ArrayBounds() {
   int arr[4] = {0, 1, 2, 3};
   volatile int idx = 7;  // out of [0,4)

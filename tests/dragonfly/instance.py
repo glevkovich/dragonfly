@@ -1,5 +1,4 @@
 import dataclasses
-import itertools
 import logging
 import os
 import random
@@ -20,10 +19,6 @@ from redis.asyncio import RedisCluster as RedisCluster
 
 START_DELAY = 0.8
 START_GDB_DELAY = 5.0
-
-# Monotonic sequence used to give each sanitized dragonfly process a unique
-# UBSAN_OPTIONS log_path filename (avoids PID reuse clobbering logs across a run).
-_ubsan_log_seq = itertools.count()
 
 
 @dataclass
@@ -277,24 +272,38 @@ class DflyInstance:
             self.proc = None
 
     def _ubsan_env(self):
-        """Child env with a per-instance UBSAN_OPTIONS log_path.
+        """Child env with a per-test UBSAN_OPTIONS log_path laid out in folders.
 
-        UBSan writes findings to `<log_path>.<pid>`; PIDs are reused over a long
-        run, so a shared log_path lets one process overwrite another's file and
-        lose findings. We rewrite just the filename to `pytest.<test>.<seq>` (same
-        folder, same "pytest." prefix the summary globs, plus the test name for
-        triage). Returns None on non-sanitized runs so Popen inherits os.environ.
+        UBSan writes findings to `<log_path>.<pid>`. We point log_path at
+        `<base>/<suite>/<case>/ubsan`, so each test gets its OWN folder (suite =
+        test file, case = test name + params) and short `ubsan.<pid>` files.
+        Per-test folders keep PID reuse across the long run from overwriting
+        another test's findings, and make triage trivial (the folder IS the test).
+        Returns None on non-sanitized runs so Popen inherits os.environ.
         """
         opts = os.environ.get("UBSAN_OPTIONS", "")
         if "log_path=" not in opts:
             return None
+
+        def _san(s):
+            s = "".join(c if c.isalnum() or c in "._-" else "_" for c in s).strip("_")
+            return s or "unknown"
+
+        raw_id = os.environ.get("PYTEST_CURRENT_TEST", "unknown").split(" (")[0]
+        file_part, _, case_part = raw_id.partition("::")
+        suite = os.path.basename(file_part)
+        if suite.endswith(".py"):
+            suite = suite[:-3]
+        suite = _san(suite)[:80]
+        case = _san(case_part)[:120]
+
         parts = opts.split(":")
         for i, part in enumerate(parts):
             if part.startswith("log_path="):
                 base_dir = os.path.dirname(part[len("log_path=") :]) or "."
-                test_id = os.environ.get("PYTEST_CURRENT_TEST", "unknown").split(" (")[0]
-                test_id = "".join(c if c.isalnum() or c in "._-" else "_" for c in test_id)[:120]
-                parts[i] = f"log_path={base_dir}/pytest.{test_id}.{next(_ubsan_log_seq)}"
+                sub_dir = os.path.join(base_dir, suite, case)
+                os.makedirs(sub_dir, exist_ok=True)
+                parts[i] = f"log_path={os.path.join(sub_dir, 'ubsan')}"
         env = os.environ.copy()
         env["UBSAN_OPTIONS"] = ":".join(parts)
         return env

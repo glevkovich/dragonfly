@@ -27,6 +27,15 @@ on:
   schedule:
     - cron: '0 4 * * 0' # Sundays 04:00 UTC
   workflow_dispatch: # manual run, any branch
+    inputs:
+      enable_helio:
+        description: "Instrument & report UBSan findings inside the helio submodule"
+        type: boolean
+        default: true
+      dedup_token_length:
+        description: "UBSan DEDUP_TOKEN length in stack frames (0 = off). Tags reports for external dedup tools; does not change how many findings are printed."
+        type: number
+        default: 3
 
 permissions:
   contents: read
@@ -81,6 +90,34 @@ jobs:
           rm -rf /hostroot/usr/local/lib/android || true
           rm -rf /hostroot/opt/ghc || true
           echo "=== disk after ==="; df -h
+
+      # Resolve the two workflow_dispatch toggles (both default ON, incl. on the
+      # scheduled run where the inputs context is empty):
+      #   enable_helio -- instrument the helio submodule (BUILD time, via the
+      #                   UBSan ignore-list; affects both phase-1 and phase-2 builds).
+      #   dedup_token_length -- frames in UBSan's DEDUP_TOKEN line (RUNTIME, applied
+      #                   to UBSAN_OPTIONS in the phase-2 test step; 0 disables it).
+      # Writes a config banner to the top of the job summary.
+      - name: Resolve run configuration
+        env:
+          ENABLE_HELIO: ${{ inputs.enable_helio }}
+          DEDUP_TOKEN_LENGTH: ${{ inputs.dedup_token_length }}
+        run: |
+          helio="${ENABLE_HELIO:-true}"          # empty on scheduled runs -> default ON
+          dedup="${DEDUP_TOKEN_LENGTH:-3}"        # empty on scheduled runs -> default 3
+          if [[ "${helio}" == "false" ]]; then
+            # Enable the ignore-list rule so helio is NOT instrumented.
+            sed -i 's|^#[[:space:]]*src:\*/helio/\*|src:*/helio/*|' \
+              tools/sanitizers/ubsan/ubsan-ignorelist.txt
+            echo "helio instrumentation: DISABLED"
+          else
+            echo "helio instrumentation: ENABLED (default)"
+          fi
+          {
+            echo "> [!NOTE]"
+            echo "> **Run configuration** — helio analysis: **$([[ "${helio}" == "false" ]] && echo OFF || echo ON)**, dedup_token_length: **${dedup}**. Toggle these with the \`enable_helio\` / \`dedup_token_length\` inputs under “Run workflow”."
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # ----------------------------------------------------------------------
       # Phase 1: self-test -- prove every enabled UBSan check is actually live.
@@ -208,28 +245,42 @@ jobs:
       # continue-on-error lets the run proceed so we can evaluate UBSan findings.
       - name: Run tests under UBSan
         continue-on-error: true
+        env:
+          DEDUP_TOKEN_LENGTH: ${{ inputs.dedup_token_length }}
         run: |
+          set -o pipefail   # keep pytest's exit code across the tee below
           cd ${GITHUB_WORKSPACE}/tests
           mkdir -p ${GITHUB_WORKSPACE}/build/ubsan-logs
+          # Bundle the triage helper into the artifact root so it runs directly
+          # from the unzipped download (see the summary's INFO note).
+          cp ${GITHUB_WORKSPACE}/tools/sanitizers/ubsan/ubsan_trace.sh \
+            ${GITHUB_WORKSPACE}/build/ubsan-logs/
           export DRAGONFLY_PATH="${GITHUB_WORKSPACE}/build/dragonfly"
+          # dedup_token_length appends a DEDUP_TOKEN of the top-N frames to each report
+          # for external dedup tooling; 0 disables it. It does NOT change how many
+          # findings are printed (UBSan reports each location once per process; the
+          # summary further dedups by file:line).
+          dedup_opt=""
+          [[ "${DEDUP_TOKEN_LENGTH:-3}" != "0" ]] && dedup_opt="dedup_token_length=${DEDUP_TOKEN_LENGTH:-3}:"
           # halt_on_error=0 keeps dragonfly alive so one run logs EVERY finding (max coverage).
           # strip_path_prefix trims the workspace path so locations read as src/... and helio/...
-          # Every dragonfly process logs to ONE folder; instance.py gives each its own
-          # log_path (pytest.<test>.<seq>.<pid>) so PID reuse never overwrites a file, and
-          # the summary aggregates findings from ALL tests together, per arch.
-          export UBSAN_OPTIONS="halt_on_error=0:print_stacktrace=1:report_error_type=1:dedup_token_length=3:strip_path_prefix=${GITHUB_WORKSPACE}/:suppressions=${GITHUB_WORKSPACE}/tools/sanitizers/ubsan/ubsan-suppressions.txt:log_path=${GITHUB_WORKSPACE}/build/ubsan-logs/pytest"
+          # instance.py rewrites log_path to build/ubsan-logs/<suite>/<case>/ubsan, so findings
+          # land in a per-test folder as short ubsan.<pid> files (no cross-test clobber).
+          export UBSAN_OPTIONS="halt_on_error=0:print_stacktrace=1:report_error_type=1:${dedup_opt}strip_path_prefix=${GITHUB_WORKSPACE}/:suppressions=${GITHUB_WORKSPACE}/tools/sanitizers/ubsan/ubsan-suppressions.txt:log_path=${GITHUB_WORKSPACE}/build/ubsan-logs/ubsan"
           # Run the WHOLE suite except tests tagged 'large' (too heavy for UBSan).
           # valkey_search needs separate setup and is excluded from collection.
           # --continue-on-collection-errors: one un-importable module must not abort the
           # entire session (that previously hid all results behind a single collection error).
-          # --junitxml records per-test wall time + failure reason for the timing report
-          # (it lands in ubsan-logs and is uploaded with the findings).
+          # --junitxml records per-test wall time + failure reason for the timing report.
+          # -rfE + tee capture the full pytest console -- tracebacks and the captured
+          # stdout/stderr/logs of FAILED/ERRORED tests -- to pytest-console.log, uploaded
+          # with the artifact so failures can be diagnosed without re-running.
           # Timeout is generous: the full suite under UBSan is much slower than a normal run.
           timeout 110m pytest -m "not large" \
-            --ignore=dragonfly/valkey_search --timeout=600 --color=yes \
+            --ignore=dragonfly/valkey_search --timeout=600 --color=yes -rfE \
             --continue-on-collection-errors \
             --junitxml="${GITHUB_WORKSPACE}/build/ubsan-logs/ubsan-junit.xml" \
-            dragonfly/
+            dragonfly/ 2>&1 | tee "${GITHUB_WORKSPACE}/build/ubsan-logs/pytest-console.log"
 
       - name: Publish UBSan findings to job summary
         if: always()
@@ -247,6 +298,14 @@ jobs:
         continue-on-error: true
         uses: dawidd6/action-download-artifact@v6
         with:
+          # TODO(temporary): while this workflow lives on a fork, pull the baseline
+          # from UPSTREAM dragonflydb/dragonfly so we get a real comparison. Revert
+          # to this repo's own regression-tests (delete the `repo:` + `github_token:`
+          # lines) once this is merged upstream. Note: cross-repo artifact download
+          # may need a PAT with actions:read on dragonflydb/dragonfly if GITHUB_TOKEN
+          # is insufficient.
+          repo: dragonflydb/dragonfly
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           workflow: regression-tests.yml
           workflow_conclusion: success
           branch: main
@@ -274,7 +333,7 @@ jobs:
       - name: Report UBSan findings (informational)
         run: |
           logs="${GITHUB_WORKSPACE}/build/ubsan-logs"
-          findings=$(cat "$logs"/pytest.* 2>/dev/null | grep "runtime error" \
+          findings=$(grep -rh "runtime error" --include='ubsan.*' "$logs" 2>/dev/null \
             | grep -v -E "_deps/|third_party/|/usr/" | sort -u || true)
           count=$(printf '%s' "$findings" | grep -c . || true)
           if [[ "$count" -gt 0 ]]; then

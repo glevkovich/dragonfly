@@ -7,7 +7,7 @@ Usage:
 Emits (to stdout, meant to be appended to $GITHUB_STEP_SUMMARY):
   * an outcome line (passed / failed / errored / skipped, total wall time);
   * every failure/error with its reason (first message line);
-  * the slowest tests by wall time;
+  * a `slowest-tests.txt` file (full per-test timings) written into the artifact;
   * if a baseline is given, "reduced-coverage suspects": tests that failed or
     errored AND finished much faster than their regression baseline. UBSan is
     strictly slower than a normal run, so a test that finishes far quicker than
@@ -26,7 +26,6 @@ import xml.etree.ElementTree as ET
 # A test that finishes below this fraction of its baseline time under UBSan (which
 # is always slower) most likely exited early and covered less code.
 EARLY_EXIT_RATIO = 0.8
-SLOWEST_N = 20
 
 
 def _key(case):
@@ -142,14 +141,20 @@ def main():
                 print(f"    {reason}")
         print("```\n")
 
-    # ---- Slowest tests ----------------------------------------------------
-    slowest = sorted(cases.items(), key=lambda kv: kv[1][0], reverse=True)[:SLOWEST_N]
-    print(f"<details><summary>Slowest {len(slowest)} tests</summary>\n")
-    print("```")
-    for key, (t, _o, _r) in slowest:
-        print(f"{t:7.1f}s  {key}")
-    print("```")
-    print("</details>\n")
+    # ---- Slowest tests: written to a file in the artifact, not the summary ---
+    slowest = sorted(cases.items(), key=lambda kv: kv[1][0], reverse=True)
+    slowest_path = os.path.join(os.path.dirname(os.path.abspath(junit_path)), "slowest-tests.txt")
+    try:
+        with open(slowest_path, "w") as fh:
+            fh.write(f"# Tests by wall time, slowest first ({arch}) — {len(slowest)} tests\n")
+            for key, (t, _o, _r) in slowest:
+                fh.write(f"{t:8.1f}s  {key}\n")
+        print(
+            f"⏱️ Full per-test timings (slowest first) are in "
+            f"`{os.path.basename(slowest_path)}` at the root of the `ubsan-logs-{arch}` artifact.\n"
+        )
+    except OSError:
+        pass
 
     # ---- Reduced-coverage suspects vs regression baseline -----------------
     if baseline_path:

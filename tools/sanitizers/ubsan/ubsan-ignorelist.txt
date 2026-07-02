@@ -15,8 +15,10 @@ src:*/third_party/*
 src:*/_deps/*
 
 # --- The helio framework (git submodule). Instrumented on purpose: we *WANT*
-# helio findings surfaced in the run, even though fixes land upstream.
-# Uncomment to remove Helio from the analysis
+# helio findings surfaced in the run, even though fixes land upstream. Helio
+# analysis is therefore ON by default (the rule below stays commented out).
+# The `enable_helio` workflow input flips this: when set to false, ubsan.yml
+# uncomments the rule below (via sed) so helio is excluded from instrumentation.
 #src:*/helio/*
 
 # --- System toolchain headers (libstdc++ / gcc) and Boost -------------------

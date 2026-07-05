@@ -199,15 +199,26 @@ emit_diff() {
   echo ""
 }
 
-# Blue INFO banner at the very top: how to read the report + how to reach the
-# artifact, and WHY the tests still pass despite these findings.
-emit_intro() {
+# Single blue INFO banner at the very top, combining (1) the run configuration,
+# (2) the occurrence totals, and (3) how to read the report + reach the artifact.
+# CFG_SUMMARY / CFG_REPRO are passed in by the workflow (absent for local runs).
+emit_notes() {
+  local i=0
   echo "> [!NOTE]"
-  echo "> **How to read this report:** Each row below is one UBSan diagnostic (\`file:line:column\`), deduplicated and counted. **These findings do NOT fail the job** - UBSan here is *recoverable*: it prints the diagnostic and lets the program keep running."
+  echo "> **Notes**"
   echo "> "
-  echo "> The summary tells you **what / where**; the uploaded \`ubsan-logs-${arch}\` artifact tells you **who / why** - the exact test and the full call stack. Each location lists **one example test** (\`suite/case\`); other tests may hit the same line too."
+  if [[ -n "${CFG_SUMMARY:-}" ]]; then
+    i=$((i + 1))
+    echo "> **${i}. Run configuration:** ${CFG_SUMMARY}"
+    [[ -n "${CFG_REPRO:-}" ]] && \
+      echo "> Re-run with these settings: **Actions -> Run workflow** (pick the same values), or with the GitHub CLI: \`${CFG_REPRO}\`"
+    echo "> "
+  fi
+  i=$((i + 1))
+  echo "> **${i}. Totals (${arch}):** **${total}** finding occurrence(s) - **${ub_total}** undefined behavior, **${susp_total}** suspicious / defined-but-flagged. Locations are deduplicated by file:line:column. Full symbolized stack traces: download the \`ubsan-logs-${arch}\` artifact."
   echo "> "
-  echo "> References: [what is C++ undefined behavior](${UB_LINK}) · [what each UBSan check means](${UBSAN_CHECKS_DOC})"
+  i=$((i + 1))
+  echo "> **${i}. How to read:** each row below is one UBSan diagnostic (\`file:line:column\`), deduplicated and counted. **These findings do NOT fail the job** - UBSan here is *recoverable*: it prints the diagnostic and lets the program keep running. The summary tells you **what / where**; the uploaded \`ubsan-logs-${arch}\` artifact tells you **who / why** - the exact test and the full call stack. Each location lists **one example test** (\`suite/case\`). References: [what is C++ undefined behavior](${UB_LINK}) · [what each UBSan check means](${UBSAN_CHECKS_DOC})."
   echo ""
   echo "Triage a \`file:line:column\` from the unzipped \`ubsan-logs-${arch}\` artifact root - list the tests that hit it, open the full stack, or let the helper do both:"
   echo ""
@@ -235,15 +246,7 @@ emit_suppress_help() {
   echo ""
 }
 
-# --- Totals: blue banner, printed FIRST (before everything else) -------------
-emit_totals() {
-  echo "> [!NOTE]"
-  echo "> **Totals (${arch}):** **${total}** finding occurrence(s) - **${ub_total}** undefined behavior, **${susp_total}** suspicious / defined-but-flagged. Locations are deduplicated by file:line:column. Full symbolized stack traces: download the \`ubsan-logs-${arch}\` artifact."
-  echo ""
-}
-
-emit_totals
-emit_intro
+emit_notes
 emit_suppress_help
 emit_diff
 emit_section UB

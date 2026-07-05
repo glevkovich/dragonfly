@@ -106,6 +106,7 @@ jobs:
       # ALL fields to the top of the job summary. enable_helio also toggles the
       # UBSan ignore-list (BUILD time) so it affects both phase-1 and phase-2 builds.
       - name: Resolve run configuration
+        id: runcfg
         env:
           ENABLE_HELIO: ${{ inputs.enable_helio }}
           COMPARE: ${{ inputs.compare }}
@@ -126,13 +127,12 @@ jobs:
             echo "helio instrumentation: ENABLED (default)"
           fi
           on_off() { [[ "$1" == "$2" ]] && echo OFF || echo ON; }
+          # Hand the config line + reproduce command to the summary step, which
+          # folds them into the single "Notes" banner at the top of the report.
           {
-            echo "> [!NOTE]"
-            echo "> **Run configuration:** helio: **$(on_off "${helio}" false)** | compare: **$(on_off "${compare}" false)** | baseline: **${ref:-last successful scheduled run}** | fail_on_new: **$([[ "${fail_on_new}" == true ]] && echo ON || echo OFF)**"
-            echo ">"
-            echo "> Reproduce this exact run: \`gh workflow run ubsan.yml --ref ${REF_NAME} -f enable_helio=${helio} -f compare=${compare} -f compare_ref='${ref}' -f fail_on_new=${fail_on_new}\`"
-            echo ""
-          } >> "$GITHUB_STEP_SUMMARY"
+            echo "cfg_summary=helio: **$(on_off "${helio}" false)** | compare: **$(on_off "${compare}" false)** | baseline: **${ref:-last successful scheduled run}** | fail_on_new: **$([[ "${fail_on_new}" == true ]] && echo ON || echo OFF)**"
+            echo "cfg_repro=gh workflow run ubsan.yml --ref ${REF_NAME} -f enable_helio=${helio} -f compare=${compare} -f compare_ref='${ref}' -f fail_on_new=${fail_on_new}"
+          } >> "$GITHUB_OUTPUT"
 
       # ----------------------------------------------------------------------
       # Phase 1: self-test -- prove every enabled UBSan check is actually live.
@@ -302,16 +302,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           fail() { echo "::error::$1"; exit 1; }
-          # Make a commit available locally even if the checkout happens to be shallow.
-          ensure_present() { git cat-file -e "$1^{commit}" 2>/dev/null || git fetch --no-tags origin "$1" 2>/dev/null || true; }
-          # 0 = ancestor, 1 = definitely NOT an ancestor, other = git couldn't tell
-          # (usually a shallow / incomplete history) -- reported distinctly.
+          # Ancestry via the GitHub compare API -- works regardless of how shallow
+          # the checkout is (local `git merge-base` fails on a truncated clone).
+          # base is an ancestor of HEAD iff base...HEAD is "ahead" or "identical".
           ensure_ancestor() {
-            local rc=0; git merge-base --is-ancestor "$1" HEAD 2>/dev/null || rc=$?
-            case "${rc}" in
-              0) return 0 ;;
-              1) fail "$2" ;;
-              *) fail "$2 (git could not verify ancestry -- the checkout may be shallow)" ;;
+            local base="$1" msg="$2" st
+            st="$(curl -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
+                  "${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_REPOSITORY}/compare/${base}...${GITHUB_SHA}" \
+                  | jq -r '.status // "error"')" || st="error"
+            case "${st}" in
+              ahead|identical) return 0 ;;
+              behind|diverged) fail "${msg}" ;;
+              *) fail "${msg} (GitHub compare API returned status=${st})" ;;
             esac
           }
           emit() { printf '%s\n' "$@" >> "$GITHUB_OUTPUT"; }  # selector for the fetch step
@@ -324,13 +326,6 @@ jobs:
             exit 0
           fi
 
-          # An explicit ref needs full history for the ancestry check -- unshallow
-          # the clone if the checkout ended up shallow (fetch-depth not honored).
-          if [[ "$(git rev-parse --is-shallow-repository 2>/dev/null)" == "true" ]]; then
-            echo "Unshallowing repository for the ancestry check..."
-            git fetch --unshallow --no-tags origin 2>/dev/null || true
-          fi
-
           # R<run-number> (e.g. R3): compare against that workflow run -- must be GREEN.
           if [[ "${ref}" =~ ^[Rr][0-9]+$ ]]; then
             num="${ref#[Rr]}"
@@ -341,7 +336,6 @@ jobs:
             conclusion="$(printf '%s' "${row}" | jq -r '.conclusion')"
             sha="$(printf '%s' "${row}" | jq -r '.head_sha')"
             [[ "${conclusion}" == "success" ]] || fail "compare_ref '${ref}': run #${num} is not green (conclusion=${conclusion})."
-            ensure_present "${sha}"
             ensure_ancestor "${sha}" "compare_ref '${ref}': run #${num} commit ${sha} is not an ancestor of HEAD."
             emit "fetch=true" "lenient=false" "if_missing=fail" \
                  "conclusion=" "event=" "commit=" "run_id=$(printf '%s' "${row}" | jq -r '.id')" \
@@ -349,15 +343,13 @@ jobs:
             exit 0
           fi
 
-          # A git ref (sha / branch / tag); also try origin/<ref>, then fetch it
-          # (handles a shallow clone) before giving up.
+          # A git ref (sha / branch / tag). Resolve to a sha locally; if that fails
+          # but it looks like a commit sha, use it as-is (the API ancestry check
+          # below validates that it exists and is reachable).
           sha="$(git rev-parse --verify "${ref}^{commit}" 2>/dev/null)" || true
           [[ -n "${sha}" ]] || sha="$(git rev-parse --verify "origin/${ref}^{commit}" 2>/dev/null)" || true
-          if [[ -z "${sha}" ]]; then
-            git fetch --no-tags origin "${ref}" 2>/dev/null || true
-            sha="$(git rev-parse --verify "FETCH_HEAD^{commit}" 2>/dev/null)" || true
-          fi
-          [[ -n "${sha}" ]] || fail "compare_ref '${ref}' is not a valid git ref (or not reachable in this checkout)."
+          [[ -n "${sha}" || ! "${ref}" =~ ^[0-9a-fA-F]{7,40}$ ]] || sha="${ref}"
+          [[ -n "${sha}" ]] || fail "compare_ref '${ref}' is not a valid git ref."
           ensure_ancestor "${sha}" "compare_ref '${ref}' (${sha}) is not an ancestor of HEAD (must be on the current branch history)."
           emit "fetch=true" "lenient=false" "if_missing=fail" \
                "conclusion=" "event=" "commit=${sha}" "run_id=" \
@@ -382,6 +374,9 @@ jobs:
 
       - name: Publish UBSan findings to job summary
         if: always()
+        env:
+          CFG_SUMMARY: ${{ steps.runcfg.outputs.cfg_summary }}
+          CFG_REPRO: ${{ steps.runcfg.outputs.cfg_repro }}
         run: |
           bash "${GITHUB_WORKSPACE}/tools/sanitizers/ubsan/ubsan_summarize_findings.sh" \
             "${GITHUB_WORKSPACE}/build/ubsan-logs" "${{ matrix.arch }}" \

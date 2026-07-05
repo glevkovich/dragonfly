@@ -37,7 +37,7 @@ on:
         type: boolean
         default: true
       compare_ref:
-        description: "Baseline git ref (empty = last successful scheduled run; must be an ancestor of HEAD)"
+        description: "Baseline: empty = last successful scheduled run; a git ref (sha/branch/tag) OR R<run-number> e.g. R3. Must be green + an ancestor of HEAD."
         type: string
         default: ""
       fail_on_new:
@@ -280,67 +280,72 @@ jobs:
             --junitxml="${GITHUB_WORKSPACE}/build/ubsan-logs/ubsan-junit.xml" \
             dragonfly/ 2>&1 | tee "${GITHUB_WORKSPACE}/build/ubsan-logs/pytest-console.log"
 
-      # Resolve the baseline for the "newly added" diff. Default = the last
-      # successful SCHEDULED run of THIS workflow (not a manual dispatch); a
-      # compare_ref (any git ref) overrides it but MUST be an ancestor of HEAD.
+      # Resolve the baseline for the "New vs Existing" diff and emit a selector for
+      # the single download step below. Default (empty compare_ref) = the last
+      # successful SCHEDULED run (lenient: skip if none yet). An explicit compare_ref --
+      # a git ref OR R<run-number> -- is STRICT: it must be green (for R<n>) and an
+      # ancestor of HEAD, with a real artifact, else the job fails.
       - name: Resolve findings baseline
         id: baseline
         if: ${{ inputs.compare != 'false' }}
         env:
           COMPARE_REF: ${{ inputs.compare_ref }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          fail() { echo "::error::$1"; exit 1; }
+          ensure_ancestor() { git merge-base --is-ancestor "$1" HEAD 2>/dev/null || fail "$2"; }
+          emit() { printf '%s\n' "$@" >> "$GITHUB_OUTPUT"; }  # selector for the fetch step
+
           ref="${COMPARE_REF:-}"
           if [[ -z "${ref}" ]]; then
-            # Default: last successful scheduled run. Lenient -- skip if none yet.
-            echo "mode=last" >> "$GITHUB_OUTPUT"
-            echo "desc=the last successful scheduled run" >> "$GITHUB_OUTPUT"
+            emit "fetch=true" "lenient=true" "if_missing=warn" \
+                 "conclusion=success" "event=schedule" "commit=" "run_id=" \
+                 "desc=the last successful scheduled run"
             exit 0
           fi
-          # An EXPLICIT compare_ref is STRICT: any problem fails the job immediately
-          # (a baseline the user asked for that can't be used must be loud, not skipped).
-          # Accept a sha / tag / branch; also try origin/<ref> for remote branches.
+
+          # R<run-number> (e.g. R3): compare against that workflow run -- must be GREEN.
+          if [[ "${ref}" =~ ^[Rr][0-9]+$ ]]; then
+            num="${ref#[Rr]}"
+            api="${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_REPOSITORY}/actions/workflows/ubsan.yml/runs?per_page=100"
+            row="$(curl -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "${api}" \
+                   | jq -c --argjson n "${num}" 'first(.workflow_runs[] | select(.run_number==$n))')" || true
+            [[ -n "${row}" && "${row}" != "null" ]] || fail "compare_ref '${ref}': no run #${num} for ubsan.yml (or beyond the latest 100 runs)."
+            conclusion="$(printf '%s' "${row}" | jq -r '.conclusion')"
+            sha="$(printf '%s' "${row}" | jq -r '.head_sha')"
+            [[ "${conclusion}" == "success" ]] || fail "compare_ref '${ref}': run #${num} is not green (conclusion=${conclusion})."
+            ensure_ancestor "${sha}" "compare_ref '${ref}': run #${num} commit ${sha} is not an ancestor of HEAD."
+            emit "fetch=true" "lenient=false" "if_missing=fail" \
+                 "conclusion=" "event=" "commit=" "run_id=$(printf '%s' "${row}" | jq -r '.id')" \
+                 "desc=run #${num} (${sha:0:12})"
+            exit 0
+          fi
+
+          # A git ref (sha / branch / tag); also try origin/<ref>.
           sha="$(git rev-parse --verify "${ref}^{commit}" 2>/dev/null)" || true
-          if [[ -z "${sha}" ]]; then
-            sha="$(git rev-parse --verify "origin/${ref}^{commit}" 2>/dev/null)" || true
-          fi
-          if [[ -z "${sha}" ]]; then
-            echo "::error::compare_ref '${ref}' is not a valid git ref."
-            exit 1
-          fi
-          if ! git merge-base --is-ancestor "${sha}" HEAD; then
-            echo "::error::compare_ref '${ref}' (${sha}) is not an ancestor of HEAD (must be on the current branch history)."
-            exit 1
-          fi
-          echo "mode=ref" >> "$GITHUB_OUTPUT"
-          echo "commit=${sha}" >> "$GITHUB_OUTPUT"
-          echo "desc=${ref} (${sha:0:12})" >> "$GITHUB_OUTPUT"
+          [[ -n "${sha}" ]] || sha="$(git rev-parse --verify "origin/${ref}^{commit}" 2>/dev/null)" || true
+          [[ -n "${sha}" ]] || fail "compare_ref '${ref}' is not a valid git ref."
+          ensure_ancestor "${sha}" "compare_ref '${ref}' (${sha}) is not an ancestor of HEAD (must be on the current branch history)."
+          emit "fetch=true" "lenient=false" "if_missing=fail" \
+               "conclusion=" "event=" "commit=${sha}" "run_id=" \
+               "desc=${ref} (${sha:0:12})"
 
-      # Baseline = last successful SCHEDULED run of this workflow (the canonical
-      # cadence run) -- NOT an ad-hoc manual dispatch -- so comparisons are stable.
-      - name: Fetch baseline (last successful scheduled run)
-        if: ${{ steps.baseline.outputs.mode == 'last' }}
-        continue-on-error: true
+      # Single baseline download. Selector fields come from the resolve step above;
+      # empty ones are ignored by the action. Lenient (continue-on-error + warn) only
+      # for the default last-scheduled baseline; explicit refs/runs fail on a miss.
+      - name: Fetch findings baseline
+        if: ${{ steps.baseline.outputs.fetch == 'true' }}
+        continue-on-error: ${{ steps.baseline.outputs.lenient == 'true' }}
         uses: dawidd6/action-download-artifact@v6
         with:
           workflow: ubsan.yml
-          workflow_conclusion: success
-          event: schedule
-          name: ubsan-logs-${{ matrix.arch }}
-          path: ${{ github.workspace }}/build/ubsan-baseline
-          if_no_artifact_found: warn
-
-      # Baseline = the run at the given (ancestor) commit. STRICT: if that commit
-      # has no UBSan run/artifact, FAIL -- the user explicitly asked to compare
-      # against it, so a missing baseline must be loud (not a silent skip).
-      - name: Fetch baseline (compare_ref)
-        if: ${{ steps.baseline.outputs.mode == 'ref' }}
-        uses: dawidd6/action-download-artifact@v6
-        with:
-          workflow: ubsan.yml
+          workflow_conclusion: ${{ steps.baseline.outputs.conclusion }}
+          event: ${{ steps.baseline.outputs.event }}
           commit: ${{ steps.baseline.outputs.commit }}
+          run_id: ${{ steps.baseline.outputs.run_id }}
           name: ubsan-logs-${{ matrix.arch }}
           path: ${{ github.workspace }}/build/ubsan-baseline
-          if_no_artifact_found: fail
+          if_no_artifact_found: ${{ steps.baseline.outputs.if_missing }}
 
       - name: Publish UBSan findings to job summary
         if: always()
@@ -405,27 +410,6 @@ jobs:
             "${GITHUB_WORKSPACE}/build/ubsan-logs/ubsan-junit.xml" \
             "${{ matrix.arch }}" \
             "${GITHUB_WORKSPACE}/build/regression-baseline" >> "$GITHUB_STEP_SUMMARY" || true
-
-      # Job verdict: PASS only if the UBSan run produced NO first-party
-      # UBSan findings. Third-party / std-library locations are excluded (matches the
-      # ignore-list intent); triage those from the uploaded artifact if needed.
-      # Informational-only: count and list findings but never fail the job.
-      # The job is green as long as the infrastructure (build, self-test, pytest) worked.
-      # Exit 42 is reserved for future use as a hard-gate sentinel when a suppressions
-      # list is in place; for now we just surface findings for manual triage.
-      # Scope: first-party src/ + helio/ findings; /usr/, _deps/, third_party/ excluded.
-      - name: Report UBSan findings (informational)
-        run: |
-          logs="${GITHUB_WORKSPACE}/build/ubsan-logs"
-          findings=$(grep -rh "runtime error" --include='ubsan.*' "$logs" 2>/dev/null \
-            | grep -v -E "_deps/|third_party/|/usr/" | sort -u || true)
-          count=$(printf '%s' "$findings" | grep -c . || true)
-          if [[ "$count" -gt 0 ]]; then
-            echo "::notice::UBSan found ${count} finding(s) (src/ + helio/) during the UBSan run -- informational, not a gate failure."
-            printf '%s\n' "$findings"
-          else
-            echo "No UBSan findings in src/ or helio/."
-          fi
 
       - name: Upload UBSan logs
         if: always()

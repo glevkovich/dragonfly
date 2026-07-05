@@ -21,8 +21,12 @@
 #
 set -euo pipefail
 
-logs_dir="${1:?usage: ubsan_summarize_findings.sh <logs-dir> <arch>}"
-arch="${2:?usage: ubsan_summarize_findings.sh <logs-dir> <arch>}"
+logs_dir="${1:?usage: ubsan_summarize_findings.sh <logs-dir> <arch> [baseline-logs-dir] [baseline-desc]}"
+arch="${2:?usage: ubsan_summarize_findings.sh <logs-dir> <arch> [baseline-logs-dir] [baseline-desc]}"
+# Optional baseline: a previous run's ubsan-logs dir. When present and non-empty,
+# a "Newly added" section at the top lists only locations here-but-not-in-baseline.
+baseline_dir="${3:-}"
+baseline_desc="${4:-the last successful scheduled run}"
 
 UB_LINK="https://en.cppreference.com/w/cpp/language/ub"
 # Official list of every UBSan check name (unsigned-integer-overflow, implicit-
@@ -78,89 +82,155 @@ classify() {
     }'
 }
 
+# Sorted-unique file:line:col of every finding under a logs dir (for baseline diff).
+extract_locs() {
+  grep -rh -i "runtime error:" --include='ubsan.*' "$1" 2>/dev/null \
+    | sed -E 's/ runtime error:.*//; s/^[[:space:]]+//' | sort -u
+}
+
 tagged="$(printf '%s\n' "${raw}" | classify)"
 
+# Baseline (a previous run's ubsan-logs). When present + non-empty, findings are
+# split into New (not in baseline) vs Existing, and the new ones are written to
+# new-findings.txt for the optional fail_on_new gate.
+base_locs=""
+has_baseline=0
+if [[ -n "${baseline_dir}" && -d "${baseline_dir}" ]]; then
+  base_locs="$(extract_locs "${baseline_dir}")"
+  [[ -n "${base_locs}" ]] && has_baseline=1
+fi
+
+new_findings_file="${logs_dir}/new-findings.txt"
+rm -f "${new_findings_file}" 2>/dev/null || true
+if [[ "${has_baseline}" -eq 1 ]]; then
+  # Unique-by-location rows (BUCKET<TAB>KIND<TAB>loc<TAB>example-test) new vs baseline.
+  printf '%s\n' "${tagged}" \
+    | awk -F'\t' 'NR==FNR { seen[$0]=1; next }
+                  NF && !($3 in seen) && !($3 in done) { done[$3]=1; print }' \
+        <(printf '%s\n' "${base_locs}") - \
+    > "${new_findings_file}" 2>/dev/null || true
+fi
+
+# Occurrence totals (for the footer). Location counts are computed per section.
 count_bucket() { printf '%s\n' "${tagged}" | awk -F'\t' -v b="$1" '$1==b' | grep -c . || true; }
-emit_types()   { printf '%s\n' "${tagged}" | awk -F'\t' -v b="$1" '$1==b {print $2}' \
-                   | sort | uniq -c | sort -rn | awk '{printf "+ %s\n", $0}'; }
-# One row per location: count, kind, file:line, and ONE example test that hit it
-# (other tests may hit the same line -- the INFO note shows how to list them all).
-emit_locs()    { printf '%s\n' "${tagged}" \
-                   | awk -F'\t' -v b="$1" '
-                       $1==b { c[$3]++; kind[$3]=$2; if (!($3 in ex)) ex[$3]=$4 }
-                       END { for (l in c) printf "%d\t%s\t%s\t%s\n", c[l], kind[l], l, ex[l] }' \
-                   | sort -rn | head -300 \
-                   | awk -F'\t' '{ printf "%7d  %-18s %s  (e.g. %s)\n", $1, $2, $3, $4 }'; }
+count_locs()   { printf '%s\n' "$1" | awk -F'\t' 'NF{print $3}' | sort -u | grep -c . || true; }
+bucket_rows()  { printf '%s\n' "${tagged}" | awk -F'\t' -v b="$1" '$1==b'; }
+split_new()      { printf '%s\n' "$1" | awk -F'\t' 'NR==FNR{seen[$0]=1;next} NF && !($3 in seen)' <(printf '%s\n' "${base_locs}") -; }
+split_existing() { printf '%s\n' "$1" | awk -F'\t' 'NR==FNR{seen[$0]=1;next} NF &&  ($3 in seen)' <(printf '%s\n' "${base_locs}") -; }
+emit_types_of()  { printf '%s\n' "$1" | awk -F'\t' 'NF{print $2}' | sort | uniq -c | sort -rn | awk 'NF{printf "+ %s\n", $0}'; }
+emit_locs_of()   { printf '%s\n' "$1" \
+                     | awk -F'\t' 'NF { c[$3]++; kind[$3]=$2; if (!($3 in ex)) ex[$3]=$4 }
+                                   END { for (l in c) printf "%d\t%s\t%s\t%s\n", c[l], kind[l], l, ex[l] }' \
+                     | sort -rn | head -300 \
+                     | awk -F'\t' '{ printf "%7d  %-18s %s  (e.g. %s)\n", $1, $2, $3, $4 }'; }
 
 ub_total="$(count_bucket UB)"
 susp_total="$(count_bucket SUSP)"
 total=$(( ub_total + susp_total ))
 
-# --- Sections first (UB, then suspicious), totals as a footer ---------------
-emit_section() {
-  local bucket="$1" total_n="$2"
-  if [[ "${bucket}" == "UB" ]]; then
-    echo "## Undefined behaviors - ${total_n} occurrence(s) · ${arch}"
-    echo ""
-    echo "> [!CAUTION]"
-    echo "> These are **real C++ undefined behavior**: the program violates the C++ standard, so the standard imposes **no requirements** on the result - the compiler may miscompile, crash, or silently corrupt data. These should be fixed."
-    echo "> Nuance: \`divide-by-zero\` on *floating point* (e.g. \`100.0/0\`) is UB by the standard but yields \`inf\` on IEEE-754 hardware, so it does **not** crash in practice; *integer* division by zero is a genuine crash (SIGFPE)."
-  else
-    echo "## Suspicious / defined-but-flagged - ${total_n} occurrence(s) · ${arch}"
-    echo ""
-    echo "> [!WARNING]"
-    echo "> Well-defined behavior surfaced by the extra integer & implicit-conversion checks (unsigned wrap/shift/negation, narrowing conversions). Not C++ standard violations, but worth a look for unintended truncation / sign bugs."
-  fi
-  echo ""
-  if [[ "${total_n}" -eq 0 ]]; then
-    echo "_none_"
-    echo ""
-    return
-  fi
+# --- One findings block: check-type breakdown + expandable locations --------
+emit_findings_block() {
+  local rows="$1"
   echo "By check type:"
   echo '```diff'
-  emit_types "${bucket}"
+  emit_types_of "${rows}"
   echo '```'
   echo ""
-  echo "<details><summary>locations (count &middot; type &middot; file:line &middot; example test)</summary>"
+  echo "> [!NOTE]"
+  echo "> Press the ▸ arrow to expand the full list of locations."
+  echo ""
+  echo "<details><summary>locations (count &middot; type &middot; file:line:column &middot; example test)</summary>"
   echo ""
   echo '```'
-  emit_locs "${bucket}"
+  emit_locs_of "${rows}"
   echo '```'
   echo ""
   echo "</details>"
   echo ""
 }
 
+# --- One bucket (UB or SUSP), subdivided New / Existing when a baseline exists.
+emit_section() {
+  local bucket="$1"
+  local rows; rows="$(bucket_rows "${bucket}")"
+  local total_locs; total_locs="$(count_locs "${rows}")"
+  if [[ "${bucket}" == "UB" ]]; then
+    echo "## Undefined behaviors - ${total_locs} location(s) · ${arch}"
+    echo ""
+    echo "> [!CAUTION]"
+    echo "> These are **real C++ undefined behavior**: the program violates the C++ standard, so the standard imposes **no requirements** on the result - the compiler may miscompile, crash, or silently corrupt data. These should be fixed."
+  else
+    echo "## Suspicious / defined-but-flagged - ${total_locs} location(s) · ${arch}"
+    echo ""
+    echo "> [!WARNING]"
+    echo "> Well-defined behavior surfaced by the extra integer & implicit-conversion checks (unsigned wrap/shift/negation, narrowing conversions). Not C++ standard violations, but worth a look for unintended truncation / sign bugs."
+  fi
+  echo ""
+  if [[ "${total_locs}" -eq 0 ]]; then
+    echo "_none_"
+    echo ""
+    return
+  fi
+  if [[ "${has_baseline}" -eq 1 ]]; then
+    local new_r existing_r nn ne
+    new_r="$(split_new "${rows}")"
+    existing_r="$(split_existing "${rows}")"
+    nn="$(count_locs "${new_r}")"
+    ne="$(count_locs "${existing_r}")"
+    echo "### 🆕 New - ${nn} location(s) (not in ${baseline_desc})"
+    echo ""
+    if [[ "${nn}" -eq 0 ]]; then echo "_none_"; echo ""; else emit_findings_block "${new_r}"; fi
+    echo "### Existing - ${ne} location(s)"
+    echo ""
+    if [[ "${ne}" -eq 0 ]]; then echo "_none_"; echo ""; else emit_findings_block "${existing_r}"; fi
+  else
+    emit_findings_block "${rows}"
+  fi
+}
+
 # Blue INFO banner at the very top: how to read the report + how to reach the
 # artifact, and WHY the tests still pass despite these findings.
 emit_intro() {
   echo "> [!NOTE]"
-  echo "> **How to read this report.** Each row below is one UBSan diagnostic (\`file:line:col\`), deduplicated and counted. **These findings do NOT fail the job and the tests still pass** - UBSan here is *recoverable*: it prints the diagnostic and lets the program keep running. Production binaries are built **without** UBSan, so they carry no such instrumentation (and standard-but-defined cases like float divide-by-zero don't crash there)."
+  echo "> **How to read this report.** Each row below is one UBSan diagnostic (\`file:line:column\`), deduplicated and counted. **These findings do NOT fail the job and the tests still pass** - UBSan here is *recoverable*: it prints the diagnostic and lets the program keep running."
   echo "> "
   echo "> The summary tells you **what / where**; the uploaded \`ubsan-logs-${arch}\` artifact tells you **who / why** - the exact test and the full call stack. Each location lists **one example test** (\`suite/case\`); other tests may hit the same line too."
   echo "> "
-  echo "> References: [what is C++ undefined behavior](${UB_LINK}) · [what each UBSan check means - unsigned-integer-overflow, implicit-conversion, ...](${UBSAN_CHECKS_DOC})"
+  echo "> References: [what is C++ undefined behavior](${UB_LINK}) · [what each UBSan check means](${UBSAN_CHECKS_DOC})"
   echo ""
-  echo "Triage: read the summary → pick a \`file:line\` → unzip the \`ubsan-logs-${arch}\` artifact and, from its root, run:"
+  echo "Triage a \`file:line:column\` from the unzipped \`ubsan-logs-${arch}\` artifact root - list the tests that hit it, open the full stack, or let the helper do both:"
   echo ""
   echo '```bash'
-  echo "# 1) which tests hit this location (each match is <suite>/<case>/ubsan.<pid>):"
-  echo "grep -rl 'src/core/dense_set.cc:494' ."
-  echo "# 2) jump to the full symbolized stack in one of those files:"
-  echo "grep -n -A40 'src/core/dense_set.cc:494' <suite>/<case>/ubsan.*"
+  echo "# which tests hit this location (each match is <suite>/<case>/ubsan.<pid>):"
+  echo "> grep -rl 'src/core/dense_set.cc:494:17' ."
+  echo "# jump to the full symbolized stack in one of those files:"
+  echo "> grep -n -A40 'src/core/dense_set.cc:494:17' <suite>/<case>/ubsan.*"
   echo "# ...or let the bundled helper do both (it takes any grep pattern):"
-  echo "./ubsan_trace.sh 'src/core/dense_set.cc:494'"
+  echo "> bash ubsan_trace.sh 'src/core/dense_set.cc:494:17'"
+  echo '```'
+  echo ""
+}
+
+# --- Suppression help: how to silence a confirmed false positive (once) -----
+emit_suppress_help() {
+  echo "> [!TIP]"
+  echo "> **Suppressing a confirmed false positive (suspicious list).** These extra checks (implicit-conversion, unsigned wrap/shift/negation) are well-defined and often intentional. After you REVIEW a finding and confirm it is benign, exclude just that check for its file or function by adding a per-check section to \`tools/sanitizers/ubsan/ubsan-ignorelist.txt\`, then rebuild. The section header scopes it to ONE check, so real UB elsewhere in that file is still caught. Granularity is file/function, not line -- document WHY it is safe, and prefer fixing the code when practical."
+  echo ""
+  echo '```'
+  echo "# tools/sanitizers/ubsan/ubsan-ignorelist.txt"
+  echo "[implicit-conversion]                 # only this check is suppressed"
+  echo "fun:*YourFunctionName*                # or  src:src/path/to/file.cc"
   echo '```'
   echo ""
 }
 
 emit_intro
-emit_section UB "${ub_total}"
-emit_section SUSP "${susp_total}"
+emit_suppress_help
+emit_section UB
+emit_section SUSP
 
 # --- Totals footer ----------------------------------------------------------
 echo "---"
 echo ""
-echo "**${total}** finding occurrence(s): **${ub_total}** undefined behavior, **${susp_total}** suspicious / defined-but-flagged. Locations are deduplicated by file:line. **For the full symbolized stack traces, download the \`ubsan-logs-${arch}\` artifact** attached to this run."
+echo "**${total}** finding occurrence(s): **${ub_total}** undefined behavior, **${susp_total}** suspicious / defined-but-flagged. Locations are deduplicated by file:line:column. **For the full symbolized stack traces, download the \`ubsan-logs-${arch}\` artifact** attached to this run."
 echo ""

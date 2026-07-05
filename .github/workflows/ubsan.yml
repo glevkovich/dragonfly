@@ -32,6 +32,18 @@ on:
         description: "Enable Helio Instrumentation"
         type: boolean
         default: true
+      compare:
+        description: "Diff-run (Show newly-added issues vs a baseline run)"
+        type: boolean
+        default: true
+      compare_ref:
+        description: "Baseline git ref (empty = last successful scheduled run; must be an ancestor of HEAD)"
+        type: string
+        default: ""
+      fail_on_new:
+        description: "Fail the job on NEW real-UB + implicit-conversion findings vs baseline (default: informational)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -69,6 +81,8 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: true
+          # Full history so `compare_ref` can be resolved and ancestry-checked.
+          fetch-depth: 0
 
       - name: Show toolchain
         run: |
@@ -107,7 +121,7 @@ jobs:
           fi
           {
             echo "> [!NOTE]"
-            echo "> **Run configuration** — helio analysis: **$([[ "${helio}" == "false" ]] && echo OFF || echo ON)**. Toggle with the \`enable_helio\` input under “Run workflow”."
+            echo "> **Run configuration** — helio analysis: **$([[ "${helio}" == "false" ]] && echo OFF || echo ON)**"
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -266,11 +280,93 @@ jobs:
             --junitxml="${GITHUB_WORKSPACE}/build/ubsan-logs/ubsan-junit.xml" \
             dragonfly/ 2>&1 | tee "${GITHUB_WORKSPACE}/build/ubsan-logs/pytest-console.log"
 
+      # Resolve the baseline for the "newly added" diff. Default = the last
+      # successful SCHEDULED run of THIS workflow (not a manual dispatch); a
+      # compare_ref (any git ref) overrides it but MUST be an ancestor of HEAD.
+      - name: Resolve findings baseline
+        id: baseline
+        if: ${{ inputs.compare != 'false' }}
+        env:
+          COMPARE_REF: ${{ inputs.compare_ref }}
+        run: |
+          ref="${COMPARE_REF:-}"
+          if [[ -z "${ref}" ]]; then
+            echo "mode=last" >> "$GITHUB_OUTPUT"
+            echo "desc=the last successful scheduled run" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Accept a sha / tag / branch; also try origin/<ref> for remote branches.
+          sha="$(git rev-parse --verify "${ref}^{commit}" 2>/dev/null)" || true
+          if [[ -z "${sha}" ]]; then
+            sha="$(git rev-parse --verify "origin/${ref}^{commit}" 2>/dev/null)" || true
+          fi
+          if [[ -z "${sha}" ]]; then
+            echo "::warning::compare_ref '${ref}' is not a valid git ref -- skipping comparison."
+            echo "mode=skip" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if ! git merge-base --is-ancestor "${sha}" HEAD; then
+            echo "::warning::compare_ref '${ref}' (${sha}) is not an ancestor of HEAD -- skipping comparison."
+            echo "mode=skip" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "mode=ref" >> "$GITHUB_OUTPUT"
+          echo "commit=${sha}" >> "$GITHUB_OUTPUT"
+          echo "desc=${ref} (${sha:0:12})" >> "$GITHUB_OUTPUT"
+
+      # Baseline = last successful SCHEDULED run of this workflow (the canonical
+      # cadence run) -- NOT an ad-hoc manual dispatch -- so comparisons are stable.
+      - name: Fetch baseline (last successful scheduled run)
+        if: ${{ steps.baseline.outputs.mode == 'last' }}
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: ubsan.yml
+          workflow_conclusion: success
+          event: schedule
+          name: ubsan-logs-${{ matrix.arch }}
+          path: ${{ github.workspace }}/build/ubsan-baseline
+          if_no_artifact_found: warn
+
+      # Baseline = the run at the given (ancestor) commit.
+      - name: Fetch baseline (compare_ref)
+        if: ${{ steps.baseline.outputs.mode == 'ref' }}
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: ubsan.yml
+          commit: ${{ steps.baseline.outputs.commit }}
+          name: ubsan-logs-${{ matrix.arch }}
+          path: ${{ github.workspace }}/build/ubsan-baseline
+          if_no_artifact_found: warn
+
       - name: Publish UBSan findings to job summary
         if: always()
         run: |
           bash "${GITHUB_WORKSPACE}/tools/sanitizers/ubsan/ubsan_summarize_findings.sh" \
-            "${GITHUB_WORKSPACE}/build/ubsan-logs" "${{ matrix.arch }}" >> "$GITHUB_STEP_SUMMARY"
+            "${GITHUB_WORKSPACE}/build/ubsan-logs" "${{ matrix.arch }}" \
+            "${GITHUB_WORKSPACE}/build/ubsan-baseline" "${{ steps.baseline.outputs.desc }}" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      # Opt-in strict gate: fail the job on NEW findings vs the baseline. Scope is
+      # real UB + implicit-conversion (the #7562 narrowing class); other suspicious
+      # (unsigned wrap/negation/shift) stay informational. Off by default while we
+      # stabilize the baseline -- flip it on once the diff is proven steady.
+      - name: Enforce fail_on_new
+        if: ${{ inputs.fail_on_new == 'true' }}
+        run: |
+          f="${GITHUB_WORKSPACE}/build/ubsan-logs/new-findings.txt"
+          if [[ ! -s "$f" ]]; then
+            echo "No new findings vs baseline (or no baseline available)."
+            exit 0
+          fi
+          # new-findings.txt rows are BUCKET<TAB>KIND<TAB>file:line:col<TAB>example-test.
+          gated="$(awk -F'\t' '$1=="UB" || $2=="implicit-conversion"' "$f")"
+          n="$(printf '%s\n' "${gated}" | grep -c . || true)"
+          if [[ "$n" -gt 0 ]]; then
+            echo "::error::fail_on_new: ${n} new gated finding(s) vs baseline (UB + implicit-conversion)."
+            printf '%s\n' "${gated}" | awk -F'\t' '{ print "  + "$2"  "$3"  (e.g. "$4")" }'
+            exit 1
+          fi
+          echo "No new gated findings (UB / implicit-conversion) vs baseline."
 
       # Best-effort timing baseline: the latest successful regression-tests run
       # uploads its pytest JUnit as junit-regression-* artifacts. Pull the most

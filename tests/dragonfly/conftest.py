@@ -25,7 +25,14 @@ import redis
 from redis import asyncio as aioredis
 
 from . import PortPicker
-from .instance import DflyInstance, DflyParams, DflyInstanceFactory, RedisServer
+from .instance import (
+    DflyInstance,
+    DflyParams,
+    DflyInstanceFactory,
+    RedisServer,
+    ubsan_log_subdir,
+    ubsan_logs_base,
+)
 from .proxy import Proxy
 from .utility import (
     DflySeederFactory,
@@ -573,6 +580,39 @@ def copy_failed_logs(log_dir, report):
         pass
 
 
+def copy_failed_logs_to_ubsan(item, report, log_dir):
+    """Under the UBSan run, co-locate a failed test's logs with its findings.
+
+    Writes the pytest report (traceback + captured output) and copies the
+    Dragonfly server logs into build/ubsan-logs/<suite>/<case>/ -- the SAME folder
+    as that test's ubsan.<pid> findings -- so a failure is fully debuggable from
+    the uploaded artifact. No-op outside the UBSan run (UBSAN_OPTIONS unset).
+    """
+    base = ubsan_logs_base()
+    if not base:
+        return
+    sub_dir = ubsan_log_subdir(base, item.nodeid)
+    os.makedirs(sub_dir, exist_ok=True)
+    with open(os.path.join(sub_dir, "test-failure.log"), "a") as fh:
+        fh.write(f"\n===== {report.when} {report.outcome}: {report.nodeid} =====\n")
+        fh.write((report.longreprtext or "") + "\n")
+        for label, text in (
+            ("captured stdout", report.capstdout),
+            ("captured stderr", report.capstderr),
+            ("captured log", report.caplog),
+        ):
+            if text:
+                fh.write(f"----- {label} -----\n{text}\n")
+    if log_dir and os.path.isdir(log_dir):
+        for f in os.listdir(log_dir):
+            src = os.path.join(log_dir, f)
+            if os.path.isfile(src):
+                try:
+                    shutil.copy(src, sub_dir)
+                except OSError:
+                    pass
+
+
 # tests results we get on the "call" state
 # but we can not copy logs until "teardown" state because the server isn't stoped
 # so we save result of the "call" state and process it on the "teardown" when the server is stoped
@@ -593,6 +633,11 @@ def pytest_runtest_makereport(item, call):
                 copy_failed_logs(log_dir, report)
             if call_outcome and call_outcome.failed:
                 copy_failed_logs(log_dir, call_outcome)
+        # Under the UBSan run, also co-locate the failure with its findings.
+        if report.failed:
+            copy_failed_logs_to_ubsan(item, report, log_dir)
+        elif call_outcome and call_outcome.failed:
+            copy_failed_logs_to_ubsan(item, call_outcome, log_dir)
 
 
 @pytest.fixture(scope="function")

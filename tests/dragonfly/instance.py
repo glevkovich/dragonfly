@@ -47,6 +47,34 @@ class Colors:
         return clz.COLORS[clz.last_color]
 
 
+def _ubsan_sanitize(s):
+    s = "".join(c if c.isalnum() or c in "._-" else "_" for c in s).strip("_")
+    return s or "unknown"
+
+
+def ubsan_log_subdir(base_dir, test_id):
+    """Return `<base_dir>/<suite>/<case>` for a PYTEST_CURRENT_TEST / nodeid style id.
+
+    suite = test file stem, case = test name + params. This mirrors the layout
+    `DflyInstance._ubsan_env` writes UBSan logs to, so a test's failure log can
+    land in the same folder as its `ubsan.<pid>` findings.
+    """
+    raw = test_id.split(" (")[0]
+    file_part, _, case_part = raw.partition("::")
+    suite = os.path.basename(file_part)
+    if suite.endswith(".py"):
+        suite = suite[:-3]
+    return os.path.join(base_dir, _ubsan_sanitize(suite)[:80], _ubsan_sanitize(case_part)[:120])
+
+
+def ubsan_logs_base():
+    """Base dir UBSan writes to (dirname of UBSAN_OPTIONS log_path), or None."""
+    for part in os.environ.get("UBSAN_OPTIONS", "").split(":"):
+        if part.startswith("log_path="):
+            return os.path.dirname(part[len("log_path=") :]) or "."
+    return None
+
+
 class DflyStartException(Exception):
     pass
 
@@ -285,23 +313,12 @@ class DflyInstance:
         if "log_path=" not in opts:
             return None
 
-        def _san(s):
-            s = "".join(c if c.isalnum() or c in "._-" else "_" for c in s).strip("_")
-            return s or "unknown"
-
-        raw_id = os.environ.get("PYTEST_CURRENT_TEST", "unknown").split(" (")[0]
-        file_part, _, case_part = raw_id.partition("::")
-        suite = os.path.basename(file_part)
-        if suite.endswith(".py"):
-            suite = suite[:-3]
-        suite = _san(suite)[:80]
-        case = _san(case_part)[:120]
-
+        test_id = os.environ.get("PYTEST_CURRENT_TEST", "unknown")
         parts = opts.split(":")
         for i, part in enumerate(parts):
             if part.startswith("log_path="):
                 base_dir = os.path.dirname(part[len("log_path=") :]) or "."
-                sub_dir = os.path.join(base_dir, suite, case)
+                sub_dir = ubsan_log_subdir(base_dir, test_id)
                 os.makedirs(sub_dir, exist_ok=True)
                 parts[i] = f"log_path={os.path.join(sub_dir, 'ubsan')}"
         env = os.environ.copy()

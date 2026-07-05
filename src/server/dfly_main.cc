@@ -1097,6 +1097,26 @@ Usage: dragonfly [FLAGS]
 
   LOG(INFO) << "Starting dragonfly " << GetVersion() << "-" << kGitSha;
 
+  // TODO(TEMPORARY): REMOVE before merge. Two deliberate, non-crashing UBSan
+  // findings planted to exercise the scheduled UBSan CI "New vs baseline" diff
+  // and the fail_on_new gate. Both are recoverable (UBSan prints and continues)
+  // and have NO effect on behavior:
+  //   * signed-integer-overflow                                 -> UB bucket
+  //   * implicit-conversion (u64 -> unsigned narrowing, #7562)  -> suspicious bucket
+  // `volatile` forces runtime evaluation so the optimizer cannot fold them away;
+  // the pragma silences only the COMPILE warning -- the UBSan runtime check still fires.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+  {
+    volatile int ub_max = 2147483647;                                // INT_MAX
+    volatile int ub_ovf = ub_max + 1;                                // signed overflow (wraps)
+    volatile unsigned long long susp_big = (1ULL << 32) + 12345ULL;  // > UINT32_MAX
+    volatile unsigned susp_narrow = susp_big;                        // narrowing -> impl-conversion
+    (void)ub_ovf;
+    (void)susp_narrow;
+  }
+#pragma GCC diagnostic pop
+
   struct sigaction act;
   act.sa_handler = sigill_hdlr;
   sigemptyset(&act.sa_mask);

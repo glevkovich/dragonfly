@@ -291,22 +291,25 @@ jobs:
         run: |
           ref="${COMPARE_REF:-}"
           if [[ -z "${ref}" ]]; then
+            # Default: last successful scheduled run. Lenient -- skip if none yet.
             echo "mode=last" >> "$GITHUB_OUTPUT"
             echo "desc=the last successful scheduled run" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # An EXPLICIT compare_ref is STRICT: any problem fails the job immediately
+          # (a baseline the user asked for that can't be used must be loud, not skipped).
           # Accept a sha / tag / branch; also try origin/<ref> for remote branches.
           sha="$(git rev-parse --verify "${ref}^{commit}" 2>/dev/null)" || true
           if [[ -z "${sha}" ]]; then
             sha="$(git rev-parse --verify "origin/${ref}^{commit}" 2>/dev/null)" || true
           fi
           if [[ -z "${sha}" ]]; then
-            echo "::warning::compare_ref '${ref}' is not a valid git ref -- skipping comparison."
-            echo "mode=skip" >> "$GITHUB_OUTPUT"; exit 0
+            echo "::error::compare_ref '${ref}' is not a valid git ref."
+            exit 1
           fi
           if ! git merge-base --is-ancestor "${sha}" HEAD; then
-            echo "::warning::compare_ref '${ref}' (${sha}) is not an ancestor of HEAD -- skipping comparison."
-            echo "mode=skip" >> "$GITHUB_OUTPUT"; exit 0
+            echo "::error::compare_ref '${ref}' (${sha}) is not an ancestor of HEAD (must be on the current branch history)."
+            exit 1
           fi
           echo "mode=ref" >> "$GITHUB_OUTPUT"
           echo "commit=${sha}" >> "$GITHUB_OUTPUT"
@@ -326,17 +329,18 @@ jobs:
           path: ${{ github.workspace }}/build/ubsan-baseline
           if_no_artifact_found: warn
 
-      # Baseline = the run at the given (ancestor) commit.
+      # Baseline = the run at the given (ancestor) commit. STRICT: if that commit
+      # has no UBSan run/artifact, FAIL -- the user explicitly asked to compare
+      # against it, so a missing baseline must be loud (not a silent skip).
       - name: Fetch baseline (compare_ref)
         if: ${{ steps.baseline.outputs.mode == 'ref' }}
-        continue-on-error: true
         uses: dawidd6/action-download-artifact@v6
         with:
           workflow: ubsan.yml
           commit: ${{ steps.baseline.outputs.commit }}
           name: ubsan-logs-${{ matrix.arch }}
           path: ${{ github.workspace }}/build/ubsan-baseline
-          if_no_artifact_found: warn
+          if_no_artifact_found: fail
 
       - name: Publish UBSan findings to job summary
         if: always()

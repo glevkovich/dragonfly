@@ -101,16 +101,21 @@ jobs:
           rm -rf /hostroot/opt/ghc || true
           echo "=== disk after ==="; df -h
 
-      # Resolve the two workflow_dispatch toggles (both default ON, incl. on the
-      # scheduled run where the inputs context is empty):
-      #   enable_helio -- instrument the helio submodule (BUILD time, via the
-      #                   UBSan ignore-list; affects both phase-1 and phase-2 builds).
-      # Writes a config banner to the top of the job summary.
+      # Resolve inputs (all default to their listed value on the scheduled run,
+      # where the inputs context is empty) and write a one-line config banner with
+      # ALL fields to the top of the job summary. enable_helio also toggles the
+      # UBSan ignore-list (BUILD time) so it affects both phase-1 and phase-2 builds.
       - name: Resolve run configuration
         env:
           ENABLE_HELIO: ${{ inputs.enable_helio }}
+          COMPARE: ${{ inputs.compare }}
+          COMPARE_REF: ${{ inputs.compare_ref }}
+          FAIL_ON_NEW: ${{ inputs.fail_on_new }}
         run: |
           helio="${ENABLE_HELIO:-true}"          # empty on scheduled runs -> default ON
+          compare="${COMPARE:-true}"
+          ref="${COMPARE_REF:-}"
+          fail_on_new="${FAIL_ON_NEW:-false}"
           if [[ "${helio}" == "false" ]]; then
             # Enable the ignore-list rule so helio is NOT instrumented.
             sed -i 's|^#[[:space:]]*src:\*/helio/\*|src:*/helio/*|' \
@@ -119,9 +124,12 @@ jobs:
           else
             echo "helio instrumentation: ENABLED (default)"
           fi
+          on_off() { [[ "$1" == "$2" ]] && echo OFF || echo ON; }
           {
             echo "> [!NOTE]"
-            echo "> **Run configuration** — helio analysis: **$([[ "${helio}" == "false" ]] && echo OFF || echo ON)**"
+            echo "> **Run configuration:** helio: **$(on_off "${helio}" false)** | compare: **$(on_off "${compare}" false)** | baseline: **${ref:-last successful scheduled run}** | fail_on_new: **$([[ "${fail_on_new}" == true ]] && echo ON || echo OFF)**"
+            echo ">"
+            echo "> Full manual run: \`gh workflow run ubsan.yml --ref <branch> -f enable_helio=true -f compare=true -f compare_ref=R3 -f fail_on_new=false\`"
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -293,6 +301,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           fail() { echo "::error::$1"; exit 1; }
+          # Make a commit available locally even if the checkout happens to be shallow.
+          ensure_present() { git cat-file -e "$1^{commit}" 2>/dev/null || git fetch --no-tags origin "$1" 2>/dev/null || true; }
           ensure_ancestor() { git merge-base --is-ancestor "$1" HEAD 2>/dev/null || fail "$2"; }
           emit() { printf '%s\n' "$@" >> "$GITHUB_OUTPUT"; }  # selector for the fetch step
 
@@ -314,6 +324,7 @@ jobs:
             conclusion="$(printf '%s' "${row}" | jq -r '.conclusion')"
             sha="$(printf '%s' "${row}" | jq -r '.head_sha')"
             [[ "${conclusion}" == "success" ]] || fail "compare_ref '${ref}': run #${num} is not green (conclusion=${conclusion})."
+            ensure_present "${sha}"
             ensure_ancestor "${sha}" "compare_ref '${ref}': run #${num} commit ${sha} is not an ancestor of HEAD."
             emit "fetch=true" "lenient=false" "if_missing=fail" \
                  "conclusion=" "event=" "commit=" "run_id=$(printf '%s' "${row}" | jq -r '.id')" \
@@ -321,10 +332,15 @@ jobs:
             exit 0
           fi
 
-          # A git ref (sha / branch / tag); also try origin/<ref>.
+          # A git ref (sha / branch / tag); also try origin/<ref>, then fetch it
+          # (handles a shallow clone) before giving up.
           sha="$(git rev-parse --verify "${ref}^{commit}" 2>/dev/null)" || true
           [[ -n "${sha}" ]] || sha="$(git rev-parse --verify "origin/${ref}^{commit}" 2>/dev/null)" || true
-          [[ -n "${sha}" ]] || fail "compare_ref '${ref}' is not a valid git ref."
+          if [[ -z "${sha}" ]]; then
+            git fetch --no-tags origin "${ref}" 2>/dev/null || true
+            sha="$(git rev-parse --verify "FETCH_HEAD^{commit}" 2>/dev/null)" || true
+          fi
+          [[ -n "${sha}" ]] || fail "compare_ref '${ref}' is not a valid git ref (or not reachable in this checkout)."
           ensure_ancestor "${sha}" "compare_ref '${ref}' (${sha}) is not an ancestor of HEAD (must be on the current branch history)."
           emit "fetch=true" "lenient=false" "if_missing=fail" \
                "conclusion=" "event=" "commit=${sha}" "run_id=" \

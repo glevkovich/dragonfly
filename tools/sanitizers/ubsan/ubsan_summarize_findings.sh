@@ -114,6 +114,7 @@ fi
 # Occurrence totals (for the footer). Location counts are computed per section.
 count_bucket() { printf '%s\n' "${tagged}" | awk -F'\t' -v b="$1" '$1==b' | grep -c . || true; }
 count_locs()   { printf '%s\n' "$1" | awk -F'\t' 'NF{print $3}' | sort -u | grep -c . || true; }
+count_rows()   { printf '%s\n' "$1" | grep -c . || true; }  # occurrences (one per finding)
 bucket_rows()  { printf '%s\n' "${tagged}" | awk -F'\t' -v b="$1" '$1==b'; }
 split_new()      { printf '%s\n' "$1" | awk -F'\t' 'NR==FNR{seen[$0]=1;next} NF && !($3 in seen)' <(printf '%s\n' "${base_locs}") -; }
 split_existing() { printf '%s\n' "$1" | awk -F'\t' 'NR==FNR{seen[$0]=1;next} NF &&  ($3 in seen)' <(printf '%s\n' "${base_locs}") -; }
@@ -149,18 +150,20 @@ emit_findings_block() {
   echo ""
 }
 
-# --- One bucket (UB or SUSP), subdivided New / Existing when a baseline exists.
+# --- One bucket (UB or SUSP), FULL list (no New/Existing split here -- the diff
+# is shown separately, above, by emit_diff).
 emit_section() {
   local bucket="$1"
   local rows; rows="$(bucket_rows "${bucket}")"
   local total_locs; total_locs="$(count_locs "${rows}")"
+  local total_occ; total_occ="$(count_rows "${rows}")"
   if [[ "${bucket}" == "UB" ]]; then
-    echo "## Undefined behaviors - ${total_locs} location(s) · ${arch}"
+    echo "## Undefined behaviors - ${total_locs} location(s), ${total_occ} occurrence(s) · ${arch}"
     echo ""
     echo "> [!CAUTION]"
     echo "> These are **real C++ undefined behavior**: the program violates the C++ standard, so the standard imposes **no requirements** on the result - the compiler may miscompile, crash, or silently corrupt data. These should be fixed."
   else
-    echo "## Suspicious / defined-but-flagged - ${total_locs} location(s) · ${arch}"
+    echo "## Suspicious / defined-but-flagged - ${total_locs} location(s), ${total_occ} occurrence(s) · ${arch}"
     echo ""
     echo "> [!WARNING]"
     echo "> Well-defined behavior surfaced by the extra integer & implicit-conversion checks (unsigned wrap/shift/negation, narrowing conversions). Not C++ standard violations, but worth a look for unintended truncation / sign bugs."
@@ -171,28 +174,38 @@ emit_section() {
     echo ""
     return
   fi
-  if [[ "${has_baseline}" -eq 1 ]]; then
-    local new_r existing_r nn ne
-    new_r="$(split_new "${rows}")"
-    existing_r="$(split_existing "${rows}")"
-    nn="$(count_locs "${new_r}")"
-    ne="$(count_locs "${existing_r}")"
-    echo "### 🆕 New - ${nn} location(s) (not in ${baseline_desc})"
-    echo ""
-    if [[ "${nn}" -eq 0 ]]; then echo "_none_"; echo ""; else emit_findings_block "${new_r}"; fi
-    echo "### Existing - ${ne} location(s)"
-    echo ""
-    if [[ "${ne}" -eq 0 ]]; then echo "_none_"; echo ""; else emit_findings_block "${existing_r}"; fi
-  else
-    emit_findings_block "${rows}"
-  fi
+  emit_findings_block "${rows}"
+}
+
+# --- Diff area: the NEWLY ADDED findings (both buckets) shown BEFORE the full
+# report. Only when a baseline is available. Same findings also appear in full.
+emit_diff() {
+  [[ "${has_baseline}" -eq 1 ]] || return 0
+  local ub_new susp_new ubn suspn
+  ub_new="$(split_new "$(bucket_rows UB)")"
+  susp_new="$(split_new "$(bucket_rows SUSP)")"
+  ubn="$(count_locs "${ub_new}")"
+  suspn="$(count_locs "${susp_new}")"
+  echo "> [!CAUTION]"
+  echo "> **Newly added since ${baseline_desc}:** **${ubn}** undefined behavior + **${suspn}** suspicious location(s). Each also appears in the full report further down."
+  echo ""
+  echo "## New undefined behaviors - ${ubn} location(s) · ${arch}"
+  echo ""
+  if [[ "${ubn}" -eq 0 ]]; then echo "_none_"; echo ""; else emit_findings_block "${ub_new}"; fi
+  echo "## New suspicious / defined-but-flagged - ${suspn} location(s) · ${arch}"
+  echo ""
+  if [[ "${suspn}" -eq 0 ]]; then echo "_none_"; echo ""; else emit_findings_block "${susp_new}"; fi
+  echo "---"
+  echo ""
+  echo "# Full report · ${arch}"
+  echo ""
 }
 
 # Blue INFO banner at the very top: how to read the report + how to reach the
 # artifact, and WHY the tests still pass despite these findings.
 emit_intro() {
   echo "> [!NOTE]"
-  echo "> **How to read this report.** Each row below is one UBSan diagnostic (\`file:line:column\`), deduplicated and counted. **These findings do NOT fail the job and the tests still pass** - UBSan here is *recoverable*: it prints the diagnostic and lets the program keep running."
+  echo "> **How to read this report:** Each row below is one UBSan diagnostic (\`file:line:column\`), deduplicated and counted. **These findings do NOT fail the job and the tests still pass** - UBSan here is *recoverable*: it prints the diagnostic and lets the program keep running."
   echo "> "
   echo "> The summary tells you **what / where**; the uploaded \`ubsan-logs-${arch}\` artifact tells you **who / why** - the exact test and the full call stack. Each location lists **one example test** (\`suite/case\`); other tests may hit the same line too."
   echo "> "
@@ -203,8 +216,8 @@ emit_intro() {
   echo '```bash'
   echo "# which tests hit this location (each match is <suite>/<case>/ubsan.<pid>):"
   echo "> grep -rl 'src/core/dense_set.cc:494:17' ."
-  echo "# jump to the full symbolized stack in one of those files:"
-  echo "> grep -n -A40 'src/core/dense_set.cc:494:17' <suite>/<case>/ubsan.*"
+  echo "# print ONLY that finding's stack (its error line through its SUMMARY line):"
+  echo "> sed -n '\\%src/core/dense_set.cc:494:17%,/^SUMMARY/p' <suite>/<case>/ubsan.*"
   echo "# ...or let the bundled helper do both (it takes any grep pattern):"
   echo "> bash ubsan_trace.sh 'src/core/dense_set.cc:494:17'"
   echo '```'
@@ -214,7 +227,7 @@ emit_intro() {
 # --- Suppression help: how to silence a confirmed false positive (once) -----
 emit_suppress_help() {
   echo "> [!TIP]"
-  echo "> **Suppressing a confirmed false positive (suspicious list).** These extra checks (implicit-conversion, unsigned wrap/shift/negation) are well-defined and often intentional. After you REVIEW a finding and confirm it is benign, exclude just that check for its file or function by adding a per-check section to \`tools/sanitizers/ubsan/ubsan-ignorelist.txt\`, then rebuild. The section header scopes it to ONE check, so real UB elsewhere in that file is still caught. Granularity is file/function, not line -- document WHY it is safe, and prefer fixing the code when practical."
+  echo "> **Suppressing a confirmed false positive (suspicious list):** These extra checks (implicit-conversion, unsigned wrap/shift/negation) are well-defined and often intentional. After you REVIEW a finding and confirm it is benign, exclude just that check for its file or function by adding a per-check section to \`tools/sanitizers/ubsan/ubsan-ignorelist.txt\`, then rebuild. The section header scopes it to ONE check, so real UB elsewhere in that file is still caught. Granularity is file/function, not line - document WHY it is safe, and prefer fixing the code when practical."
   echo ""
   echo '```'
   echo "# tools/sanitizers/ubsan/ubsan-ignorelist.txt"
@@ -226,6 +239,7 @@ emit_suppress_help() {
 
 emit_intro
 emit_suppress_help
+emit_diff
 emit_section UB
 emit_section SUSP
 

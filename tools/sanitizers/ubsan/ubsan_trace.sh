@@ -18,7 +18,10 @@ set -euo pipefail
 pat="${1:?usage: ubsan_trace.sh <grep-pattern> [logs-dir]}"
 dir="${2:-.}"
 
-echo "== tests that hit: ${pat} =="
+# Blue section headers on a terminal; no color codes when piped/redirected.
+if [[ -t 1 ]]; then B=$'\033[1;34m'; R=$'\033[0m'; else B=""; R=""; fi
+
+echo "${B}== tests that hit: ${pat} ==${R}"
 mapfile -t hits < <(grep -rlF --include='ubsan.*' -- "${pat}" "${dir}" 2>/dev/null || true)
 if [[ "${#hits[@]}" -eq 0 ]]; then
   echo "(no matches under ${dir})"
@@ -28,6 +31,6 @@ fi
 for f in "${hits[@]}"; do dirname "${f}"; done | sort -u | sed "s|^${dir%/}/||"
 
 echo ""
-echo "== first full stack (${hits[0]}) =="
+echo "${B}== first full stack (${hits[0]}) ==${R}"
 # Print from the matching "runtime error:" line through its SUMMARY line.
 awk -v p="${pat}" 'index($0, p) { f = 1 } f { print } f && /^SUMMARY/ { exit }' "${hits[0]}"

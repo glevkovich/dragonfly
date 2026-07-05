@@ -100,13 +100,13 @@ total=$(( ub_total + susp_total ))
 emit_section() {
   local bucket="$1" total_n="$2"
   if [[ "${bucket}" == "UB" ]]; then
-    echo "## Undefined behaviors — ${total_n} occurrence(s) · ${arch}"
+    echo "## Undefined behaviors - ${total_n} occurrence(s) · ${arch}"
     echo ""
     echo "> [!CAUTION]"
-    echo "> These are **real C++ undefined behavior**: the program violates the C++ standard, so the standard imposes **no requirements** on the result — the compiler may miscompile, crash, or silently corrupt data. These should be fixed."
+    echo "> These are **real C++ undefined behavior**: the program violates the C++ standard, so the standard imposes **no requirements** on the result - the compiler may miscompile, crash, or silently corrupt data. These should be fixed."
     echo "> Nuance: \`divide-by-zero\` on *floating point* (e.g. \`100.0/0\`) is UB by the standard but yields \`inf\` on IEEE-754 hardware, so it does **not** crash in practice; *integer* division by zero is a genuine crash (SIGFPE)."
   else
-    echo "## Suspicious / defined-but-flagged — ${total_n} occurrence(s) · ${arch}"
+    echo "## Suspicious / defined-but-flagged - ${total_n} occurrence(s) · ${arch}"
     echo ""
     echo "> [!WARNING]"
     echo "> Well-defined behavior surfaced by the extra integer & implicit-conversion checks (unsigned wrap/shift/negation, narrowing conversions). Not C++ standard violations, but worth a look for unintended truncation / sign bugs."
@@ -136,11 +136,11 @@ emit_section() {
 # artifact, and WHY the tests still pass despite these findings.
 emit_intro() {
   echo "> [!NOTE]"
-  echo "> **How to read this report.** Each row below is one UBSan diagnostic (\`file:line:col\`), deduplicated and counted. **These findings do NOT fail the job and the tests still pass** — UBSan here is *recoverable*: it prints the diagnostic and lets the program keep running. Production binaries are built **without** UBSan, so they carry no such instrumentation (and standard-but-defined cases like float divide-by-zero don't crash there)."
+  echo "> **How to read this report.** Each row below is one UBSan diagnostic (\`file:line:col\`), deduplicated and counted. **These findings do NOT fail the job and the tests still pass** - UBSan here is *recoverable*: it prints the diagnostic and lets the program keep running. Production binaries are built **without** UBSan, so they carry no such instrumentation (and standard-but-defined cases like float divide-by-zero don't crash there)."
   echo "> "
-  echo "> The summary tells you **what / where**; the uploaded \`ubsan-logs-${arch}\` artifact tells you **who / why** — the exact test and the full call stack. Each location lists **one example test** (\`suite/case\`); other tests may hit the same line too."
+  echo "> The summary tells you **what / where**; the uploaded \`ubsan-logs-${arch}\` artifact tells you **who / why** - the exact test and the full call stack. Each location lists **one example test** (\`suite/case\`); other tests may hit the same line too."
   echo "> "
-  echo "> References: [what is C++ undefined behavior](${UB_LINK}) · [what each UBSan check means — unsigned-integer-overflow, implicit-conversion, ...](${UBSAN_CHECKS_DOC})"
+  echo "> References: [what is C++ undefined behavior](${UB_LINK}) · [what each UBSan check means - unsigned-integer-overflow, implicit-conversion, ...](${UBSAN_CHECKS_DOC})"
   echo ""
   echo "Triage: read the summary → pick a \`file:line\` → unzip the \`ubsan-logs-${arch}\` artifact and, from its root, run:"
   echo ""

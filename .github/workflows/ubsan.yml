@@ -111,6 +111,7 @@ jobs:
           COMPARE: ${{ inputs.compare }}
           COMPARE_REF: ${{ inputs.compare_ref }}
           FAIL_ON_NEW: ${{ inputs.fail_on_new }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           helio="${ENABLE_HELIO:-true}"          # empty on scheduled runs -> default ON
           compare="${COMPARE:-true}"
@@ -129,7 +130,7 @@ jobs:
             echo "> [!NOTE]"
             echo "> **Run configuration:** helio: **$(on_off "${helio}" false)** | compare: **$(on_off "${compare}" false)** | baseline: **${ref:-last successful scheduled run}** | fail_on_new: **$([[ "${fail_on_new}" == true ]] && echo ON || echo OFF)**"
             echo ">"
-            echo "> Full manual run: \`gh workflow run ubsan.yml --ref <branch> -f enable_helio=true -f compare=true -f compare_ref=R3 -f fail_on_new=false\`"
+            echo "> Reproduce this exact run: \`gh workflow run ubsan.yml --ref ${REF_NAME} -f enable_helio=${helio} -f compare=${compare} -f compare_ref='${ref}' -f fail_on_new=${fail_on_new}\`"
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -303,7 +304,16 @@ jobs:
           fail() { echo "::error::$1"; exit 1; }
           # Make a commit available locally even if the checkout happens to be shallow.
           ensure_present() { git cat-file -e "$1^{commit}" 2>/dev/null || git fetch --no-tags origin "$1" 2>/dev/null || true; }
-          ensure_ancestor() { git merge-base --is-ancestor "$1" HEAD 2>/dev/null || fail "$2"; }
+          # 0 = ancestor, 1 = definitely NOT an ancestor, other = git couldn't tell
+          # (usually a shallow / incomplete history) -- reported distinctly.
+          ensure_ancestor() {
+            local rc=0; git merge-base --is-ancestor "$1" HEAD 2>/dev/null || rc=$?
+            case "${rc}" in
+              0) return 0 ;;
+              1) fail "$2" ;;
+              *) fail "$2 (git could not verify ancestry -- the checkout may be shallow)" ;;
+            esac
+          }
           emit() { printf '%s\n' "$@" >> "$GITHUB_OUTPUT"; }  # selector for the fetch step
 
           ref="${COMPARE_REF:-}"
@@ -312,6 +322,13 @@ jobs:
                  "conclusion=success" "event=schedule" "commit=" "run_id=" \
                  "desc=the last successful scheduled run"
             exit 0
+          fi
+
+          # An explicit ref needs full history for the ancestry check -- unshallow
+          # the clone if the checkout ended up shallow (fetch-depth not honored).
+          if [[ "$(git rev-parse --is-shallow-repository 2>/dev/null)" == "true" ]]; then
+            echo "Unshallowing repository for the ancestry check..."
+            git fetch --unshallow --no-tags origin 2>/dev/null || true
           fi
 
           # R<run-number> (e.g. R3): compare against that workflow run -- must be GREEN.

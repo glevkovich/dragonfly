@@ -131,16 +131,13 @@ total=$(( ub_total + susp_total ))
 
 # --- One findings block: check-type breakdown + expandable locations --------
 emit_findings_block() {
-  local rows="$1"
+  local rows="$1" label="$2"
   echo "By check type:"
   echo '```diff'
   emit_types_of "${rows}"
   echo '```'
   echo ""
-  echo "> [!NOTE]"
-  echo "> Press the ▸ arrow to expand the full list of locations."
-  echo ""
-  echo "<details><summary>locations (count &middot; type &middot; file:line:column &middot; example test)</summary>"
+  echo "<details><summary>${label} Locations (count &middot; type &middot; file:line:column &middot; example test) - Press the arrow to expand</summary>"
   echo ""
   echo '```'
   emit_locs_of "${rows}"
@@ -153,7 +150,8 @@ emit_findings_block() {
 # --- One bucket (UB or SUSP), FULL list (no New/Existing split here -- the diff
 # is shown separately, above, by emit_diff).
 emit_section() {
-  local bucket="$1"
+  local bucket="$1" label
+  [[ "${bucket}" == "UB" ]] && label="Undefined Behaviors" || label="Suspicious Behaviors"
   local rows; rows="$(bucket_rows "${bucket}")"
   local total_locs; total_locs="$(count_locs "${rows}")"
   local total_occ; total_occ="$(count_rows "${rows}")"
@@ -174,7 +172,7 @@ emit_section() {
     echo ""
     return
   fi
-  emit_findings_block "${rows}"
+  emit_findings_block "${rows}" "${label}"
 }
 
 # --- Diff area: the NEWLY ADDED findings (both buckets) shown BEFORE the full
@@ -191,10 +189,10 @@ emit_diff() {
   echo ""
   echo "## New undefined behaviors - ${ubn} location(s) · ${arch}"
   echo ""
-  if [[ "${ubn}" -eq 0 ]]; then echo "_none_"; echo ""; else emit_findings_block "${ub_new}"; fi
+  if [[ "${ubn}" -eq 0 ]]; then echo "_none_"; echo ""; else emit_findings_block "${ub_new}" "New Undefined Behaviors"; fi
   echo "## New suspicious / defined-but-flagged - ${suspn} location(s) · ${arch}"
   echo ""
-  if [[ "${suspn}" -eq 0 ]]; then echo "_none_"; echo ""; else emit_findings_block "${susp_new}"; fi
+  if [[ "${suspn}" -eq 0 ]]; then echo "_none_"; echo ""; else emit_findings_block "${susp_new}" "New Suspicious Behaviors"; fi
   echo "---"
   echo ""
   echo "# Full report · ${arch}"
@@ -205,7 +203,7 @@ emit_diff() {
 # artifact, and WHY the tests still pass despite these findings.
 emit_intro() {
   echo "> [!NOTE]"
-  echo "> **How to read this report:** Each row below is one UBSan diagnostic (\`file:line:column\`), deduplicated and counted. **These findings do NOT fail the job and the tests still pass** - UBSan here is *recoverable*: it prints the diagnostic and lets the program keep running."
+  echo "> **How to read this report:** Each row below is one UBSan diagnostic (\`file:line:column\`), deduplicated and counted. **These findings do NOT fail the job** - UBSan here is *recoverable*: it prints the diagnostic and lets the program keep running."
   echo "> "
   echo "> The summary tells you **what / where**; the uploaded \`ubsan-logs-${arch}\` artifact tells you **who / why** - the exact test and the full call stack. Each location lists **one example test** (\`suite/case\`); other tests may hit the same line too."
   echo "> "
@@ -237,14 +235,17 @@ emit_suppress_help() {
   echo ""
 }
 
+# --- Totals: blue banner, printed FIRST (before everything else) -------------
+emit_totals() {
+  echo "> [!NOTE]"
+  echo "> **Totals (${arch}):** **${total}** finding occurrence(s) - **${ub_total}** undefined behavior, **${susp_total}** suspicious / defined-but-flagged. Locations are deduplicated by file:line:column. Full symbolized stack traces: download the \`ubsan-logs-${arch}\` artifact."
+  echo ""
+}
+
+emit_totals
 emit_intro
 emit_suppress_help
 emit_diff
 emit_section UB
 emit_section SUSP
-
-# --- Totals footer ----------------------------------------------------------
-echo "---"
-echo ""
-echo "**${total}** finding occurrence(s): **${ub_total}** undefined behavior, **${susp_total}** suspicious / defined-but-flagged. Locations are deduplicated by file:line:column. **For the full symbolized stack traces, download the \`ubsan-logs-${arch}\` artifact** attached to this run."
 echo ""

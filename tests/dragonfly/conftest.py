@@ -25,7 +25,12 @@ import redis
 from redis import asyncio as aioredis
 
 from . import PortPicker
-from .instance import DflyInstance, DflyParams, DflyInstanceFactory, RedisServer
+from .instance import (
+    DflyInstance,
+    DflyParams,
+    DflyInstanceFactory,
+    RedisServer,
+)
 from .proxy import Proxy
 from .utility import (
     DflySeederFactory,
@@ -593,6 +598,18 @@ def pytest_runtest_makereport(item, call):
                 copy_failed_logs(log_dir, report)
             if call_outcome and call_outcome.failed:
                 copy_failed_logs(log_dir, call_outcome)
+
+        # UBSan-only: locate the failure with its findings. Imported and run only when actually under UBSan.
+        failed = (
+            report
+            if report.failed
+            else (call_outcome if call_outcome and call_outcome.failed else None)
+        )
+        if failed is not None:
+            from . import ubsan_helper
+
+            if ubsan_helper.is_active():
+                ubsan_helper.collect_failure(item, failed, log_dir)
 
 
 @pytest.fixture(scope="function")

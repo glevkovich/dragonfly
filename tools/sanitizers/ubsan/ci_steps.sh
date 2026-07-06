@@ -154,7 +154,12 @@ step_resolve_findings_baseline() {
 # Resolve the latest successful regression-tests run on main to a run_id (empty if
 # none) for the timing-baseline download. Best-effort; reads GH_TOKEN from env.
 step_resolve_regression_baseline() {
-  api="${GITHUB_API_URL:-https://api.github.com}/repos/${GITHUB_REPOSITORY}"
+  # ==================== TEMPORARY - REMOVE BEFORE MERGE ====================
+  # TODO(temporary): fork testing pulls the regression baseline from UPSTREAM
+  # dragonflydb/dragonfly (a fork has no regression-tests runs of its own).
+  # Restore ${GITHUB_REPOSITORY} before the PR.
+  # ========================================================================
+  api="${GITHUB_API_URL:-https://api.github.com}/repos/dragonflydb/dragonfly"
   run_id="$(curl -sS -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" \
             "${api}/actions/workflows/regression-tests.yml/runs?branch=main&status=success&per_page=1" \
             | jq -r '.workflow_runs[0].id // ""')" || run_id=""
@@ -257,17 +262,23 @@ step_run_tests() {
   [[ -n "${UBSAN_EXTRA_RUNTIME_OPTS:-}" ]] && opts+=":${UBSAN_EXTRA_RUNTIME_OPTS}"
   export UBSAN_OPTIONS="${opts}"
 
-  # Run the whole suite except 'large' tests and valkey_search (needs setup).
-  # --continue-on-collection-errors: one bad import must not abort the session.
-  # --junitxml records per-test time + failure for the timing report.
-  # -rfE + tee save the full console (with failure logs) to pytest-console.log.
-  # The timeout is generous: the suite is much slower under UBSan.
+  # ============================ TEMPORARY - REMOVE BEFORE MERGE ============================
+  # TODO(temporary): fork smoke-test only. Run ONE test case instead of the whole suite so
+  # the run finishes in minutes while validating the workflow end to end. Before the PR,
+  # delete this block and uncomment the full-suite invocation below.
+  # ========================================================================================
   rc=0
-  timeout 110m pytest -m "not large" \
-    --ignore=dragonfly/valkey_search --timeout=600 --color=yes -rfE \
-    --continue-on-collection-errors \
+  timeout 110m pytest --timeout=600 --color=yes -rfE \
     --junitxml="${GITHUB_WORKSPACE}/build/ubsan-logs/ubsan-junit.xml" \
-    dragonfly/ 2>&1 | tee "${GITHUB_WORKSPACE}/build/ubsan-logs/pytest-console.log" || rc=$?
+    "dragonfly/connection_test.py::test_pipeline_backpressure_v2_correctness" \
+    2>&1 | tee "${GITHUB_WORKSPACE}/build/ubsan-logs/pytest-console.log" || rc=$?
+  # Full-suite run (restore before merge):
+  # rc=0
+  # timeout 110m pytest -m "not large" \
+  #   --ignore=dragonfly/valkey_search --timeout=600 --color=yes -rfE \
+  #   --continue-on-collection-errors \
+  #   --junitxml="${GITHUB_WORKSPACE}/build/ubsan-logs/ubsan-junit.xml" \
+  #   dragonfly/ 2>&1 | tee "${GITHUB_WORKSPACE}/build/ubsan-logs/pytest-console.log" || rc=$?
 
   # Mark that phase 2 ran (pass or fail) so the report steps below gate on one
   # flag. Keep pytest's exit code so the step outcome still shows pass/fail.

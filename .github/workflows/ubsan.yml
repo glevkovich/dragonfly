@@ -240,6 +240,9 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@v8
         with:
+          # TODO(temporary): fork testing - download the baseline from UPSTREAM
+          # dragonflydb/dragonfly. Remove this `repository:` line before the PR.
+          repository: dragonflydb/dragonfly
           pattern: junit-regression-*
           merge-multiple: true
           path: ${{ github.workspace }}/build/regression-baseline

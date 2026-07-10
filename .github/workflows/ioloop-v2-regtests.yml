@@ -42,6 +42,7 @@ jobs:
       - name: Build Dragonfly
         uses: ./.github/actions/builder
         with:
+          enable-ccache: 'false'
           build-type: ${{matrix.build-type}}
           targets: 'dragonfly'
 

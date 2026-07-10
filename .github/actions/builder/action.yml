@@ -42,10 +42,36 @@ inputs:
     required: false
     default: 'src/all'
     type: string
+  ccache-max-size:
+    description: "Max ccache size per config (e.g. 1G, 2G, 500M)"
+    required: false
+    default: '1G'
+    type: string
+  enable-ccache:
+    description: "Enable ccache ('false' skips cache restore/save and passes -DENABLE_CCACHE=OFF)"
+    required: false
+    default: 'true'
+    type: string
+  cache-key-suffix:
+    description: "Extra token for cache keys - pass the container so glibc/musl (and gcc version) caches don't collide"
+    required: false
+    default: 'default'
+    type: string
 
 runs:
   using: "composite"
   steps:
+    - name: Setup ccache
+      if: ${{ inputs.enable-ccache == 'true' }}
+      # ccache caches compiled objects so unchanged files are not recompiled.
+      # The dev containers already ship ccache; this wires it to the GitHub Actions
+      # cache so objects persist across ephemeral runners (see helio CI for prior art).
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: dfly-ccache-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-${{ inputs.sanitizers }}
+        max-size: ${{ inputs.ccache-max-size }}
+        verbose: 1
+
     - name: Configure CMake
       shell: bash
       run: |
@@ -64,6 +90,11 @@ runs:
           -DCMAKE_BUILD_TYPE="${{ inputs.build-type }}"
           -GNinja
         )
+
+        # Let callers turn ccache off (also disables it in CMake).
+        if [ "${{ inputs.enable-ccache }}" != "true" ]; then
+          CMAKE_CMD+=(-DENABLE_CCACHE=OFF)
+        fi
 
         # Add optional compiler flags
         if [ -n "${{ inputs.c-compiler }}" ]; then
@@ -97,4 +128,8 @@ runs:
       run: |
         cd ${GITHUB_WORKSPACE}/${{ inputs.build-dir }}
         echo "Building target: ${{ inputs.targets }}"
+        # reset counters so stats reflect this build
+        ccache -z || true
         ninja ${{ inputs.targets }}
+        echo "===== ccache stats (this build) ====="
+        ccache -s || true

@@ -1,0 +1,57 @@
+# Seeds the GitHub Actions ccache + third-party dependency caches on the default
+# branch so that pull-request builds get a WARM cache on their very first run
+# (GitHub lets PRs restore caches created on the base/default branch).
+#
+# Build-only (no tests) and limited to the two most common PR configs to keep
+# runner-minute cost low. Add more matrix entries to widen PR cache coverage.
+name: Cache Warm (main)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: cache-warm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  seed:
+    # Runs on upstream main pushes; also dispatchable anywhere (e.g. a fork) for testing.
+    if: github.repository_owner == 'dragonflydb' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        build-type: [Debug, Release]
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/romange/ubuntu-dev:24
+      options: --security-opt seccomp=unconfined --sysctl "net.ipv6.conf.all.disable_ipv6=0"
+      volumes:
+        - /:/hostroot
+      credentials:
+        username: ${{ github.repository_owner }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Free disk space
+        run: |
+          rm -rf /hostroot/usr/share/dotnet /hostroot/usr/local/share/boost \
+                 /hostroot/usr/local/lib/android /hostroot/opt/ghc || true
+          df -h
+
+      - name: Build to seed caches
+        uses: ./.github/actions/builder
+        with:
+          build-type: ${{ matrix.build-type }}
+          c-compiler: gcc
+          cxx-compiler: g++
+          cxx-flags: "-Werror -no-pie"
+          with-aws: 'OFF'
+          targets: 'src/all'

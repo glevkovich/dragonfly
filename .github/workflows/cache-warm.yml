@@ -1,0 +1,68 @@
+# Seeds the GitHub Actions ccache + third-party dependency caches on the default
+# branch so that pull-request builds get a WARM cache on their very first run
+# (GitHub lets PRs restore caches created on the base/default branch).
+#
+# Build-only (no tests) and limited to the two most common PR configs to keep
+# runner-minute cost low. Add more matrix entries to widen PR cache coverage.
+name: Cache Warm (main)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: cache-warm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  seed:
+    # Runs on upstream main pushes; also dispatchable anywhere (e.g. a fork) for testing.
+    if: github.repository_owner == 'dragonflydb' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        build-type: [Debug, Release]
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/romange/ubuntu-dev:24
+      options: --security-opt seccomp=unconfined --sysctl "net.ipv6.conf.all.disable_ipv6=0"
+      volumes:
+        - /:/hostroot
+      credentials:
+        username: ${{ github.repository_owner }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Free disk space
+        run: |
+          rm -rf /hostroot/usr/share/dotnet /hostroot/usr/local/share/boost \
+                 /hostroot/usr/local/lib/android /hostroot/opt/ghc || true
+          df -h
+
+      - name: Build to seed caches
+        uses: ./.github/actions/builder
+        with:
+          build-type: ${{ matrix.build-type }}
+          cache-key-suffix: 'ubuntu-dev:24'
+          c-compiler: gcc
+          cxx-compiler: g++
+          cxx-flags: "-Werror -no-pie"
+          with-aws: 'OFF'
+          targets: 'src/all'
+
+      - name: Report GitHub Actions cache budget
+        if: always()
+        run: |
+          j=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/cache/usage" || true)
+          used=$(echo "$j" | grep -oE '"active_caches_size_in_bytes": *[0-9]+' | grep -oE '[0-9]+$' || echo 0)
+          count=$(echo "$j" | grep -oE '"active_caches_count": *[0-9]+' | grep -oE '[0-9]+$' || echo 0)
+          echo "Actions cache: $((used/1048576)) MiB / 10240 MiB ($((used*100/10737418240))%) across ${count} entries"

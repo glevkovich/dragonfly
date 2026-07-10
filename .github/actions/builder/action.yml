@@ -56,6 +56,19 @@ runs:
         max-size: 1G
         verbose: 1
 
+    - name: Cache third-party dependencies
+      # Third-party libraries (~140s of a cold build) change rarely. Restoring the
+      # built artifacts and ExternalProject stamps lets ninja skip rebuilding them.
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ github.workspace }}/${{ inputs.build-dir }}/third_party
+          ${{ github.workspace }}/${{ inputs.build-dir }}/_deps
+        key: dfly-deps-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-${{ hashFiles('src/external_libs.cmake', '**/CMakeLists.txt', 'patches/**') }}
+        restore-keys: |
+          dfly-deps-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-
+          dfly-deps-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-
+
     - name: Configure CMake
       shell: bash
       run: |

@@ -46,6 +46,16 @@ inputs:
 runs:
   using: "composite"
   steps:
+    - name: Setup ccache
+      # ccache caches compiled objects so unchanged files are not recompiled.
+      # The dev containers already ship ccache; this wires it to the GitHub Actions
+      # cache so objects persist across ephemeral runners (see helio CI for prior art).
+      uses: hendrikmuhs/ccache-action@v1.2
+      with:
+        key: dfly-ccache-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-${{ inputs.sanitizers }}
+        max-size: 1G
+        verbose: 1
+
     - name: Configure CMake
       shell: bash
       run: |
@@ -78,6 +88,8 @@ runs:
 
         # Add fixed options
         CMAKE_CMD+=(
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           -DPRINT_STACKTRACES_ON_SIGNAL=ON
           -DWITH_AWS="${{ inputs.with-aws }}"
           -DWITH_GCP=OFF

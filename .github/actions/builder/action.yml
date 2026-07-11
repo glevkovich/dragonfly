@@ -99,6 +99,13 @@ runs:
           CMAKE_CMD+=(-DCMAKE_CXX_FLAGS="${{ inputs.cxx-flags }}")
         fi
 
+        # -g1: minimal debug info for Debug builds. Keeps function + line info
+        # (stack traces still work) but drops locals -> ~60% smaller objects,
+        # faster linking and smaller binaries.
+        if [ "${{ inputs.build-type }}" = "Debug" ]; then
+          CMAKE_CMD+=(-DCMAKE_CXX_FLAGS_DEBUG=-g1 -DCMAKE_C_FLAGS_DEBUG=-g1)
+        fi
+
         # Add fixed options
         CMAKE_CMD+=(
           -DCMAKE_C_COMPILER_LAUNCHER=ccache

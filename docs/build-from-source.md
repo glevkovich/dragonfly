@@ -65,12 +65,24 @@ cd build-opt && ninja dragonfly
 | WITH_COLLECTION_CMDS | Include commands for collections (SET, HSET, ZSET)                                                                                                                                                                                       |
 | WITH_EXTENSION_CMDS  | Include extension commands (Bloom, HLL, JSON, ...)                                                                                                                                                                                       |
 | USE_MOLD             | Uses the mold linker to reduce link time overhead while enabling Link Time Optimization (LTO) for improved runtime performance. Recommended for benchmarking and production. |
+| ENABLE_CCACHE | Use ccache as the compiler launcher when it is installed (ON by default). Disable with -DENABLE_CCACHE=OFF |
 
 Minimal debug build:
 
 ```bash
 ./helio/blaze.sh -DWITH_GPERF=OFF -DWITH_AWS=OFF -DWITH_GCP=OFF -DWITH_TIERING=OFF -DWITH_SEARCH=OFF -DWITH_COLLECTION_CMDS=OFF -DWITH_EXTENSION_CMDS=OFF
 ```
+
+### ccache
+
+ccache is enabled automatically whenever the `ccache` binary is on your `PATH`,
+so incremental rebuilds recompile only the files you changed (this applies to
+both local builds and CI). If you do **not** want ccache, disable it any of these
+ways:
+
+- configure with `-DENABLE_CCACHE=OFF` (e.g. `./helio/blaze.sh -DENABLE_CCACHE=OFF`)
+- set the `CCACHE_DISABLE=1` environment variable
+- set `disable = true` in your ccache config (`ccache -o disable=true`)
 
 ## Step 4 - voilà
 

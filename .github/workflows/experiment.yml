@@ -1,0 +1,76 @@
+name: Build Time Experiment
+on:
+  push:
+    branches:
+      - 'test/pr*'
+  workflow_dispatch:
+concurrency:
+  group: exp-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/romange/ubuntu-dev:24
+      options: --security-opt seccomp=unconfined
+      volumes:
+        - /:/hostroot
+      credentials:
+        username: ${{ github.repository_owner }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - name: Free disk
+        run: rm -rf /hostroot/usr/share/dotnet /hostroot/usr/local/lib/android /hostroot/opt/ghc || true
+      - name: Cold build (seed ccache)
+        uses: ./.github/actions/builder
+        with:
+          build-type: Debug
+          c-compiler: gcc
+          cxx-compiler: g++
+          cxx-flags: "-Werror -no-pie"
+          with-aws: 'OFF'
+          targets: 'dragonfly'
+          cache-key-suffix: 'exp2'
+  measure:
+    needs: seed
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/romange/ubuntu-dev:24
+      options: --security-opt seccomp=unconfined
+      volumes:
+        - /:/hostroot
+      credentials:
+        username: ${{ github.repository_owner }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+      - name: Free disk
+        run: rm -rf /hostroot/usr/share/dotnet /hostroot/usr/local/lib/android /hostroot/opt/ghc || true
+      - name: Change N files (N from branch name)
+        shell: bash
+        run: |
+          N=$(echo "${{ github.ref_name }}" | grep -oE '[0-9]+$')
+          echo "Branch ${{ github.ref_name }} -> changing $N file(s)"
+          files=(src/server/main_service.cc src/server/generic_family.cc src/server/string_family.cc src/server/list_family.cc src/server/set_family.cc)
+          for i in $(seq 0 $((N-1))); do
+            f="${files[$i]}"
+            printf '\n[[maybe_unused]] static int ccache_exp_marker_%s = 0;\n' "$(date +%s%N)" >> "$f"
+            echo "  changed $f"
+          done
+      - name: Warm rebuild (measured build)
+        uses: ./.github/actions/builder
+        with:
+          build-type: Debug
+          c-compiler: gcc
+          cxx-compiler: g++
+          cxx-flags: "-Werror -no-pie"
+          with-aws: 'OFF'
+          targets: 'dragonfly'
+          cache-key-suffix: 'exp2'
+      - name: Smoke test (single case)
+        run: ./build/dragonfly --version

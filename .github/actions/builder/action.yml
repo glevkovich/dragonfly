@@ -120,6 +120,15 @@ runs:
           CMAKE_CMD+=(-DCMAKE_CXX_FLAGS="${{ inputs.cxx-flags }}")
         fi
 
+        # -g1: minimal debug info for Debug builds. Verified: backtraces still
+        # show function + file:line (crash traces work); what is lost is
+        # variable/argument VALUES in gdb and core dumps. Applied only here in CI
+        # -- local blaze.sh keeps full -g, so developer debugging is unaffected.
+        # Gains ~60% smaller objects and faster linking.
+        if [ "${{ inputs.build-type }}" = "Debug" ]; then
+          CMAKE_CMD+=(-DCMAKE_CXX_FLAGS_DEBUG=-g1 -DCMAKE_C_FLAGS_DEBUG=-g1)
+        fi
+
         # Add fixed options
         CMAKE_CMD+=(
           -DPRINT_STACKTRACES_ON_SIGNAL=ON

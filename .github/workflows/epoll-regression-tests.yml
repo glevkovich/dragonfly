@@ -44,6 +44,7 @@ jobs:
         uses: ./.github/actions/builder
         with:
           build-type: ${{matrix.build-type}}
+          cache-key-suffix: ${{ matrix.container }}
           targets: 'dragonfly'
 
       - name: Authenticate to AWS

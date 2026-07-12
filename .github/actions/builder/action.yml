@@ -42,6 +42,11 @@ inputs:
     required: false
     default: 'src/all'
     type: string
+  ccache-max-size:
+    description: "Max ccache size per config (e.g. 1G, 2G, 500M)"
+    required: false
+    default: '1G'
+    type: string
 
 runs:
   using: "composite"
@@ -53,7 +58,7 @@ runs:
       uses: hendrikmuhs/ccache-action@v1.2
       with:
         key: dfly-ccache-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-${{ inputs.sanitizers }}
-        max-size: 1G
+        max-size: ${{ inputs.ccache-max-size }}
         verbose: 1
 
     - name: Cache third-party dependencies
@@ -101,8 +106,6 @@ runs:
 
         # Add fixed options
         CMAKE_CMD+=(
-          -DCMAKE_C_COMPILER_LAUNCHER=ccache
-          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           -DPRINT_STACKTRACES_ON_SIGNAL=ON
           -DWITH_AWS="${{ inputs.with-aws }}"
           -DWITH_GCP=OFF
@@ -122,4 +125,8 @@ runs:
       run: |
         cd ${GITHUB_WORKSPACE}/${{ inputs.build-dir }}
         echo "Building target: ${{ inputs.targets }}"
+        # reset counters so stats reflect this build
+        ccache -z || true
         ninja ${{ inputs.targets }}
+        echo "===== ccache stats (this build) ====="
+        ccache -s || true

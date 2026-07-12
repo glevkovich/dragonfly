@@ -33,6 +33,19 @@ set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 project(DRAGONFLY C CXX)
 set(CMAKE_CXX_STANDARD 20)
 
+# Use ccache as the compiler launcher when available. Auto-on so local AND CI
+# builds benefit without extra flags; opt out with -DENABLE_CCACHE=OFF (or the
+# CCACHE_DISABLE=1 env var / ccache config file).
+option(ENABLE_CCACHE "Use ccache as the compiler launcher when available" ON)
+if(ENABLE_CCACHE)
+  find_program(CCACHE_PROGRAM ccache)
+  if(CCACHE_PROGRAM)
+    message(STATUS "ccache enabled: ${CCACHE_PROGRAM}")
+    set(CMAKE_C_COMPILER_LAUNCHER   "${CCACHE_PROGRAM}")
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+  endif()
+endif()
+
 # Disabled because it has false positives with ref-counted intrusive pointers.
 CHECK_CXX_COMPILER_FLAG("-Wuse-after-free" HAS_USE_AFTER_FREE_WARN)
 if (HAS_USE_AFTER_FREE_WARN)

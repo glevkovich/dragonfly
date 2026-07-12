@@ -41,8 +41,18 @@ if(ENABLE_CCACHE)
   find_program(CCACHE_PROGRAM ccache)
   if(CCACHE_PROGRAM)
     message(STATUS "ccache enabled: ${CCACHE_PROGRAM}")
-    set(CMAKE_C_COMPILER_LAUNCHER   "${CCACHE_PROGRAM}")
-    set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+    # Wrap ccache with `env` so we can pass ccache settings without a config file.
+    # Compress harder to save cache space (cheap for zstd; ~5 is the recommended max).
+    set(_ccache_launcher env CCACHE_COMPRESS=true CCACHE_COMPRESSLEVEL=5)
+    # Local only: rewrite absolute paths relative to $HOME so the cache is shared
+    # across git worktrees. Skipped in CI (the CI env var is set there), where
+    # checkout paths are already stable and base_dir is a brittle hack that can
+    # mangle dependency files.
+    if(NOT DEFINED ENV{CI})
+      list(APPEND _ccache_launcher CCACHE_BASEDIR=$ENV{HOME} CCACHE_NOHASHDIR=true)
+    endif()
+    set(CMAKE_C_COMPILER_LAUNCHER   ${_ccache_launcher} "${CCACHE_PROGRAM}")
+    set(CMAKE_CXX_COMPILER_LAUNCHER ${_ccache_launcher} "${CCACHE_PROGRAM}")
   endif()
 endif()
 

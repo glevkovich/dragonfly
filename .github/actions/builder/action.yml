@@ -52,6 +52,11 @@ inputs:
     required: false
     default: 'true'
     type: string
+  cache-key-suffix:
+    description: "Extra token for cache keys - pass the container so glibc/musl (and gcc version) caches don't collide"
+    required: false
+    default: 'default'
+    type: string
 
 runs:
   using: "composite"
@@ -63,7 +68,7 @@ runs:
       # cache so objects persist across ephemeral runners (see helio CI for prior art).
       uses: hendrikmuhs/ccache-action@v1.2
       with:
-        key: dfly-ccache-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-${{ inputs.sanitizers }}
+        key: dfly-ccache-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-${{ inputs.sanitizers }}
         max-size: ${{ inputs.ccache-max-size }}
         verbose: 1
 
@@ -75,10 +80,10 @@ runs:
         path: |
           ${{ github.workspace }}/${{ inputs.build-dir }}/third_party
           ${{ github.workspace }}/${{ inputs.build-dir }}/_deps
-        key: dfly-deps-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-${{ hashFiles('src/external_libs.cmake', '**/CMakeLists.txt', 'patches/**') }}
+        key: dfly-deps-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-${{ hashFiles('src/external_libs.cmake', '**/CMakeLists.txt', 'patches/**') }}
         restore-keys: |
-          dfly-deps-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-
-          dfly-deps-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-
+          dfly-deps-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-
+          dfly-deps-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-
 
     - name: Configure CMake
       shell: bash
@@ -124,9 +129,11 @@ runs:
           CMAKE_CMD+=(-DCMAKE_CXX_FLAGS="${{ inputs.cxx-flags }}")
         fi
 
-        # -g1: minimal debug info for Debug builds. Keeps function + line info
-        # (stack traces still work) but drops local variables -> ~60% smaller
-        # objects, faster linking, smaller binaries.
+        # -g1: minimal debug info for Debug builds. Verified: backtraces still
+        # show function + file:line (crash traces work); what is lost is
+        # variable/argument VALUES in gdb and core dumps. Applied only here in CI
+        # -- local blaze.sh keeps full -g, so developer debugging is unaffected.
+        # Gains ~60% smaller objects and faster linking.
         if [ "${{ inputs.build-type }}" = "Debug" ]; then
           CMAKE_CMD+=(-DCMAKE_CXX_FLAGS_DEBUG=-g1 -DCMAKE_C_FLAGS_DEBUG=-g1)
         fi

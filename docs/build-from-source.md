@@ -64,7 +64,7 @@ cd build-opt && ninja dragonfly
 | WITH_SEARCH          | Include Search module                                                                                                                                                                                                                    |
 | WITH_COLLECTION_CMDS | Include commands for collections (SET, HSET, ZSET)                                                                                                                                                                                       |
 | WITH_EXTENSION_CMDS  | Include extension commands (Bloom, HLL, JSON, ...)                                                                                                                                                                                       |
-| USE_MOLD             | Uses the mold linker to reduce link time overhead while enabling Link Time Optimization (LTO) for improved runtime performance. Recommended for benchmarking and production. |
+| USE_MOLD             | Use the mold linker for faster linking. Auto-enabled when the `mold` binary is installed. Note: this only selects the linker; it does not enable LTO (LTO is a separate, Release-only optimization). |
 | ENABLE_CCACHE | Use ccache as the compiler launcher when it is installed (ON by default). Disable with -DENABLE_CCACHE=OFF |
 
 Minimal debug build:

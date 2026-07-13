@@ -33,9 +33,9 @@ set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 project(DRAGONFLY C CXX)
 set(CMAKE_CXX_STANDARD 20)
 
-# Use ccache as the compiler launcher when available. Auto-on so local AND CI
-# builds benefit without extra flags; opt out with -DENABLE_CCACHE=OFF (or the
-# CCACHE_DISABLE=1 env var / ccache config file).
+# Use ccache as the compiler launcher when available. Enabled by default, so local AND CI
+# builds benefit without extra flags. This can be disabled/opted out with -DENABLE_CCACHE=OFF
+# (or the CCACHE_DISABLE=1 env var / ccache config file).
 option(ENABLE_CCACHE "Use ccache as the compiler launcher when available" ON)
 if(ENABLE_CCACHE)
   find_program(CCACHE_PROGRAM ccache)
@@ -54,6 +54,13 @@ if(ENABLE_CCACHE)
     set(CMAKE_C_COMPILER_LAUNCHER   ${_ccache_launcher} "${CCACHE_PROGRAM}")
     set(CMAKE_CXX_COMPILER_LAUNCHER ${_ccache_launcher} "${CCACHE_PROGRAM}")
   endif()
+else()
+  # Neutralize any launcher a build wrapper (e.g. helio/blaze.sh) may have
+  # injected via -D, so ENABLE_CCACHE=OFF is honored for local builds too.
+  unset(CMAKE_C_COMPILER_LAUNCHER CACHE)
+  unset(CMAKE_CXX_COMPILER_LAUNCHER CACHE)
+  set(CMAKE_C_COMPILER_LAUNCHER "")
+  set(CMAKE_CXX_COMPILER_LAUNCHER "")
 endif()
 
 # Disabled because it has false positives with ref-counted intrusive pointers.

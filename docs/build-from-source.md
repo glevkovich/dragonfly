@@ -84,6 +84,19 @@ ways:
 - set the `CCACHE_DISABLE=1` environment variable
 - set `disable = true` in your ccache config (`ccache -o disable=true`)
 
+#### Cache size
+
+Dragonfly is large, so ccache's default size (5 GB, or ~5% of disk on ccache
+≥ 4.10) fills up quickly — more so with several build configs or multiple
+worktrees — and hit rates drop once it's full. The right size depends on your
+free disk space and how many projects share the (per-user) cache, so it's left
+to you. If rebuilds feel slow, raise it (50 GB is a comfortable value):
+
+```bash
+ccache -M 50G              # per-user, global; applies to all projects
+ccache -p | grep max_size  # verify
+```
+
 ## Step 4 - voilà
 
 ```bash

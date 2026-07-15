@@ -46,6 +46,13 @@
 #define DFLY_TRACY_PLOT(name, val) TracyPlot(name, val)
 #define DFLY_TRACY_MESSAGE(txt, size) TracyMessage(txt, size)
 #define DFLY_TRACY_THREAD_NAME(name) tracy::SetThreadName(name)
+// Scoped zone with an explicit 0xRRGGBB color.
+#define DFLY_TRACY_ZONE_C(name, color) ZoneScopedNC(name, color)
+// A "wait" zone: the fiber is parked / blocked / yielding here and does NO CPU work. Colored red
+// so wait time is visually and statistically distinct from work zones. Use it for await / yield /
+// cond-wait / blocking-recv / join - NOT for functions that do work but may internally preempt
+// (those stay normal-colored; their fiber-lane gaps already reveal the preemption).
+#define DFLY_TRACY_WAIT(name) ZoneScopedNC(name, 0xC0392B)
 
 #else  // !TRACY_ENABLE
 
@@ -69,5 +76,11 @@
     (void)sizeof(size);               \
   } while (0)
 #define DFLY_TRACY_THREAD_NAME(name) (void)sizeof(name)
+#define DFLY_TRACY_ZONE_C(name, color) \
+  do {                                 \
+    (void)sizeof(name);                \
+    (void)sizeof(color);               \
+  } while (0)
+#define DFLY_TRACY_WAIT(name) (void)sizeof(name)
 
 #endif  // TRACY_ENABLE

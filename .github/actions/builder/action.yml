@@ -42,18 +42,34 @@ inputs:
     required: false
     default: 'src/all'
     type: string
+  ccache-max-size:
+    description: "Max ccache size per config (e.g. 1G, 2G, 500M)"
+    required: false
+    default: '1G'
+    type: string
+  enable-ccache:
+    description: "Enable ccache ('false' skips cache restore/save and passes -DENABLE_CCACHE=OFF)"
+    required: false
+    default: 'true'
+    type: string
+  cache-key-suffix:
+    description: "Extra token for cache keys - pass the container so glibc/musl (and gcc version) caches don't collide"
+    required: false
+    default: 'default'
+    type: string
 
 runs:
   using: "composite"
   steps:
     - name: Setup ccache
+      if: ${{ inputs.enable-ccache == 'true' }}
       # ccache caches compiled objects so unchanged files are not recompiled.
       # The dev containers already ship ccache; this wires it to the GitHub Actions
       # cache so objects persist across ephemeral runners (see helio CI for prior art).
       uses: hendrikmuhs/ccache-action@v1.2
       with:
-        key: dfly-ccache-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-${{ inputs.sanitizers }}
-        max-size: 1G
+        key: dfly-ccache-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-${{ inputs.sanitizers }}
+        max-size: ${{ inputs.ccache-max-size }}
         verbose: 1
 
     - name: Cache third-party dependencies
@@ -64,14 +80,23 @@ runs:
         path: |
           ${{ github.workspace }}/${{ inputs.build-dir }}/third_party
           ${{ github.workspace }}/${{ inputs.build-dir }}/_deps
-        key: dfly-deps-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-${{ hashFiles('src/external_libs.cmake', '**/CMakeLists.txt', 'patches/**') }}
+        key: dfly-deps-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-${{ hashFiles('src/external_libs.cmake', '**/CMakeLists.txt', 'patches/**') }}
         restore-keys: |
-          dfly-deps-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-
-          dfly-deps-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-
+          dfly-deps-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-
+          dfly-deps-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-
 
     - name: Configure CMake
       shell: bash
       run: |
+        # mold linker: links much faster than GNU ld.
+        # TODO: the dev containers do not ship mold yet, so we install it per-build
+        # here. Follow-up: bake mold into ghcr.io/romange/ubuntu-dev (helio repo)
+        # and drop this apt-get step.
+        if ! command -v mold >/dev/null 2>&1; then
+          (apt-get update -qq && apt-get install -y -qq mold) >/dev/null 2>&1 || true
+        fi
+        command -v mold >/dev/null 2>&1 && echo "mold: $(mold --version | head -1)" || echo "mold NOT available"
+
         # Set sanitizer flags
         ASAN="OFF"
         USAN="OFF"
@@ -88,6 +113,11 @@ runs:
           -GNinja
         )
 
+        # Let callers turn ccache off (also disables it in CMake).
+        if [ "${{ inputs.enable-ccache }}" != "true" ]; then
+          CMAKE_CMD+=(-DENABLE_CCACHE=OFF)
+        fi
+
         # Add optional compiler flags
         if [ -n "${{ inputs.c-compiler }}" ]; then
           CMAKE_CMD+=(-DCMAKE_C_COMPILER="${{ inputs.c-compiler }}")
@@ -99,10 +129,23 @@ runs:
           CMAKE_CMD+=(-DCMAKE_CXX_FLAGS="${{ inputs.cxx-flags }}")
         fi
 
+        # -g1: minimal debug info for Debug builds. Verified: backtraces still
+        # show function + file:line (crash traces work); what is lost is
+        # variable/argument VALUES in gdb and core dumps. Applied only here in CI
+        # -- local blaze.sh keeps full -g, so developer debugging is unaffected.
+        # Gains ~60% smaller objects and faster linking.
+        if [ "${{ inputs.build-type }}" = "Debug" ]; then
+          CMAKE_CMD+=(-DCMAKE_CXX_FLAGS_DEBUG=-g1 -DCMAKE_C_FLAGS_DEBUG=-g1)
+        fi
+
+        # Use mold as the linker when available (faster linking of the many
+        # test executables + the main binary).
+        if command -v mold >/dev/null 2>&1; then
+          CMAKE_CMD+=(-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold -DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=mold)
+        fi
+
         # Add fixed options
         CMAKE_CMD+=(
-          -DCMAKE_C_COMPILER_LAUNCHER=ccache
-          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           -DPRINT_STACKTRACES_ON_SIGNAL=ON
           -DWITH_AWS="${{ inputs.with-aws }}"
           -DWITH_GCP=OFF
@@ -122,4 +165,8 @@ runs:
       run: |
         cd ${GITHUB_WORKSPACE}/${{ inputs.build-dir }}
         echo "Building target: ${{ inputs.targets }}"
+        # reset counters so stats reflect this build
+        ccache -z || true
         ninja ${{ inputs.targets }}
+        echo "===== ccache stats (this build) ====="
+        ccache -s || true

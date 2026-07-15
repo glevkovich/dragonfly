@@ -33,6 +33,36 @@ set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 project(DRAGONFLY C CXX)
 set(CMAKE_CXX_STANDARD 20)
 
+# Use ccache as the compiler launcher when available. Enabled by default, so local AND CI
+# builds benefit without extra flags. This can be disabled/opted out with -DENABLE_CCACHE=OFF
+# (or the CCACHE_DISABLE=1 env var / ccache config file).
+option(ENABLE_CCACHE "Use ccache as the compiler launcher when available" ON)
+if(ENABLE_CCACHE)
+  find_program(CCACHE_PROGRAM ccache)
+  if(CCACHE_PROGRAM)
+    message(STATUS "ccache enabled: ${CCACHE_PROGRAM}")
+    # Wrap ccache with `env` so we can pass ccache settings without a config file.
+    # Compress harder to save cache space (cheap for zstd; ~5 is the recommended max).
+    set(_ccache_launcher env CCACHE_COMPRESS=true CCACHE_COMPRESSLEVEL=5)
+    # Local only: rewrite absolute paths relative to $HOME so the cache is shared
+    # across git worktrees. Skipped in CI (the CI env var is set there), where
+    # checkout paths are already stable and base_dir is a brittle hack that can
+    # mangle dependency files.
+    if(NOT DEFINED ENV{CI})
+      list(APPEND _ccache_launcher CCACHE_BASEDIR=$ENV{HOME} CCACHE_NOHASHDIR=true)
+    endif()
+    set(CMAKE_C_COMPILER_LAUNCHER   ${_ccache_launcher} "${CCACHE_PROGRAM}")
+    set(CMAKE_CXX_COMPILER_LAUNCHER ${_ccache_launcher} "${CCACHE_PROGRAM}")
+  endif()
+else()
+  # Neutralize any launcher a build wrapper (e.g. helio/blaze.sh) may have
+  # injected via -D, so ENABLE_CCACHE=OFF is honored for local builds too.
+  unset(CMAKE_C_COMPILER_LAUNCHER CACHE)
+  unset(CMAKE_CXX_COMPILER_LAUNCHER CACHE)
+  set(CMAKE_C_COMPILER_LAUNCHER "")
+  set(CMAKE_CXX_COMPILER_LAUNCHER "")
+endif()
+
 # Disabled because it has false positives with ref-counted intrusive pointers.
 CHECK_CXX_COMPILER_FLAG("-Wuse-after-free" HAS_USE_AFTER_FREE_WARN)
 if (HAS_USE_AFTER_FREE_WARN)

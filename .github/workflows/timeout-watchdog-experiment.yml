@@ -7,6 +7,8 @@ name: Timeout Watchdog Experiment
 #
 # TEMPORARY: remove before merging the fix.
 on:
+  push:
+    branches: [timeout-watchdog-experiment]
   workflow_dispatch:
 
 permissions:

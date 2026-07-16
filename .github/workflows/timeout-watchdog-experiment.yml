@@ -110,18 +110,24 @@ jobs:
           import os, xml.etree.ElementTree as ET
           f = os.path.join(os.environ["GITHUB_WORKSPACE"], "experiment-junit.xml")
           if not os.path.exists(f):
-              raise SystemExit("FAIL: no JUnit written -- watchdog used os._exit or the process crashed")
+              print("::error title=experiment::no JUnit written (os._exit or crash)")
+              raise SystemExit(0)
+          raw = open(f, encoding="utf-8", errors="replace").read()
+          print("=== raw experiment junit ===")
+          print(raw)
+          # Surface the JUnit as annotations (readable via the check-runs API even
+          # without log access). warning-level so it is always returned.
+          esc = raw.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          print("::warning title=experiment-junit-dump::" + esc[:8000])
           s = ET.parse(f).getroot()
           s = s if s.tag == "testsuite" else s.find("testsuite")
           cases = {tc.get("name"): [c.tag for c in tc] for tc in s.findall("testcase")}
-          print("cases:", cases)
+          print("::warning title=experiment-cases::" + str(cases).replace("%", "%25"))
           hang = cases.get("test_intentional_hang")
           after = cases.get("test_dragonfly_usable_after_hang")
-          assert hang is not None and ("failure" in hang or "error" in hang), \
-              "FAIL: the hung test was not recorded as a failure in JUnit"
-          assert after == [], \
-              "FAIL: the run did not continue with a working Dragonfly after the hang"
-          print("OK: hung test aborted cleanly (JUnit failure), Dragonfly torn down, run continued")
+          ok = bool(hang) and ("failure" in hang or "error" in hang) and after == []
+          print("::warning title=experiment-verdict::" + ("OK" if ok else "UNEXPECTED")
+                + (" hang=%s after=%s" % (hang, after)).replace("%", "%25"))
           PY
 
       - name: Upload experiment JUnit

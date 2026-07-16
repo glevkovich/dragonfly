@@ -123,11 +123,23 @@ jobs:
           s = s if s.tag == "testsuite" else s.find("testsuite")
           cases = {tc.get("name"): [c.tag for c in tc] for tc in s.findall("testcase")}
           print("::warning title=experiment-cases::" + str(cases).replace("%", "%25"))
-          hang = cases.get("test_intentional_hang")
-          after = cases.get("test_dragonfly_usable_after_hang")
+
+          def find(prefix):
+              # pytest appends a fixture-parametrization suffix, e.g. "[df_factory0]".
+              for name, tags in cases.items():
+                  if name.startswith(prefix):
+                      return tags
+              return None
+
+          hang = find("test_intentional_hang")
+          after = find("test_dragonfly_usable_after_hang")
           ok = bool(hang) and ("failure" in hang or "error" in hang) and after == []
           print("::warning title=experiment-verdict::" + ("OK" if ok else "UNEXPECTED")
                 + (" hang=%s after=%s" % (hang, after)).replace("%", "%25"))
+          if not ok:
+              raise SystemExit("UNEXPECTED experiment outcome (see the annotations above)")
+          print("OK: real-Dragonfly hang aborted cleanly (JUnit failure), "
+                "Dragonfly torn down, run continued")
           PY
 
       - name: Upload experiment JUnit

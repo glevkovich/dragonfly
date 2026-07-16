@@ -1,0 +1,46 @@
+name: Timeout Watchdog Experiment
+
+# Manual, fork-runnable experiment for the async-aware per-test timeout watchdog
+# (dataplane-private#255). It does NOT build Dragonfly: it verifies that the
+# watchdog import does not break test collection and that the self-test (which
+# drives a child pytest to abort a hung test cleanly) passes in a CI environment.
+#
+# TEMPORARY: remove before merging the fix.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest requirements
+        run: pip install -r tests/dragonfly/requirements.txt
+
+      - name: Verify the watchdog import does not break collection
+        run: |
+          cd tests
+          python -m pytest dragonfly --collect-only -q > /tmp/collect.txt 2>&1 \
+            || (echo "COLLECTION FAILED"; tail -60 /tmp/collect.txt; exit 1)
+          echo "collected OK:"; tail -3 /tmp/collect.txt
+
+      - name: Run the timeout watchdog self-test
+        run: |
+          cd tests
+          python -m pytest dragonfly/infra_self_test.py -v \
+            --junitxml="${GITHUB_WORKSPACE}/selftest-junit.xml"
+
+      - name: Upload self-test JUnit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: timeout-watchdog-selftest-junit
+          path: selftest-junit.xml

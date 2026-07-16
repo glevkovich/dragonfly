@@ -27,6 +27,18 @@ from redis import asyncio as aioredis
 from . import PortPicker
 from .instance import DflyInstance, DflyParams, DflyInstanceFactory, RedisServer
 from .proxy import Proxy
+
+# Register the async-aware per-test timeout watchdog. These names must live at
+# conftest module level so pytest collects them as pytest-timeout hook impls
+# (see tests/dragonfly/_timeout_watchdog.py).
+from ._timeout_watchdog import (
+    pytest_timeout_set_timer,
+    pytest_timeout_cancel_timer,
+)
+
+# Keep an explicit reference so linters don't treat the hooks as unused imports;
+# pytest discovers them by name from this module's namespace.
+_TIMEOUT_HOOKS = (pytest_timeout_set_timer, pytest_timeout_cancel_timer)
 from .utility import (
     DflySeederFactory,
     gen_ca_cert,

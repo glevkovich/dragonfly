@@ -1,11 +1,15 @@
 name: Timeout Watchdog Experiment
 
 # Manual, fork-runnable experiment for the async-aware per-test timeout watchdog
-# (dataplane-private#255). It does NOT build Dragonfly: it verifies that the
-# watchdog import does not break test collection and that the self-test (which
-# drives a child pytest to abort a hung test cleanly) passes in a CI environment.
+# (dataplane-private#255). Two jobs:
+#   * selftest       -- no build; verifies the watchdog import does not break
+#                       collection and that the self-test passes in CI.
+#   * real-dragonfly -- builds Dragonfly and runs a DELIBERATE hang against a
+#                       real instance to prove a clean abort (JUnit failure +
+#                       teardown + continue).
 #
-# TEMPORARY: remove before merging the fix.
+# TEMPORARY: remove this whole workflow (and tests/dragonfly/timeout_experiment_test.py)
+# before merging the fix.
 on:
   push:
     branches: [timeout-watchdog-experiment]
@@ -46,3 +50,83 @@ jobs:
         with:
           name: timeout-watchdog-selftest-junit
           path: selftest-junit.xml
+
+  # TEMPORARY: builds Dragonfly and runs a DELIBERATE hang against a real
+  # instance (tests/dragonfly/timeout_experiment_test.py) to prove the watchdog
+  # aborts it cleanly (FAILURE in JUnit + Dragonfly torn down + run continues).
+  # Remove this job (and the experiment test file) before merging.
+  real-dragonfly:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/romange/ubuntu-dev:24
+      options: --security-opt seccomp=unconfined --sysctl "net.ipv6.conf.all.disable_ipv6=0"
+      volumes:
+        - /:/hostroot
+        - /mnt:/mnt
+      credentials:
+        username: ${{ github.repository_owner }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Free disk space
+        run: |
+          rm -rf /hostroot/usr/share/dotnet /hostroot/usr/local/share/boost \
+                 /hostroot/usr/local/lib/android /hostroot/opt/ghc || true
+          df -h
+
+      - name: Build Dragonfly
+        uses: ./.github/actions/builder
+        with:
+          build-type: Debug
+          targets: 'dragonfly'
+          with-aws: 'OFF'
+
+      - name: Install pytest requirements
+        run: ${GITHUB_WORKSPACE}/.github/scripts/install-pytest-requirements.sh
+
+      - name: Run the real-Dragonfly timeout experiment
+        run: |
+          cd ${GITHUB_WORKSPACE}/tests
+          export DRAGONFLY_PATH="${GITHUB_WORKSPACE}/build/dragonfly"
+          ls -l "$DRAGONFLY_PATH"
+          # The intentional hang is expected to FAIL, so ignore pytest's exit
+          # code here; the next step judges correctness from the JUnit instead.
+          timeout 20m python3 -m pytest -p no:cacheprovider \
+            dragonfly/timeout_experiment_test.py \
+            --timeout=300 -o timeout_func_only=true \
+            --junitxml="${GITHUB_WORKSPACE}/experiment-junit.xml" \
+            --log-cli-level=INFO -v || true
+
+      - name: Judge the experiment outcome from JUnit
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import os, xml.etree.ElementTree as ET
+          f = os.path.join(os.environ["GITHUB_WORKSPACE"], "experiment-junit.xml")
+          if not os.path.exists(f):
+              raise SystemExit("FAIL: no JUnit written -- watchdog used os._exit or the process crashed")
+          s = ET.parse(f).getroot()
+          s = s if s.tag == "testsuite" else s.find("testsuite")
+          cases = {tc.get("name"): [c.tag for c in tc] for tc in s.findall("testcase")}
+          print("cases:", cases)
+          hang = cases.get("test_intentional_hang")
+          after = cases.get("test_dragonfly_usable_after_hang")
+          assert hang is not None and ("failure" in hang or "error" in hang), \
+              "FAIL: the hung test was not recorded as a failure in JUnit"
+          assert after == [], \
+              "FAIL: the run did not continue with a working Dragonfly after the hang"
+          print("OK: hung test aborted cleanly (JUnit failure), Dragonfly torn down, run continued")
+          PY
+
+      - name: Upload experiment JUnit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: timeout-experiment-junit
+          path: experiment-junit.xml

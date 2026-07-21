@@ -1,0 +1,95 @@
+# cache-warm: seeds the shared ccache on refs/heads/main after every merge so that the
+# FIRST CI run of each new PR restores a warm cache instead of compiling from scratch.
+#
+# Background (the two bugs this fixes):
+#   A. ci-tests only runs on pull_request, so its matrix caches are written to per-PR
+#      refs (refs/pull/<N>/merge) that no other PR can read. Nothing seeded refs/heads/main
+#      for the ci configs, so every PR's first run was 100% cold (e.g. the alpine config).
+#   B. The only workflows writing to main were the regression warmers, which omit the
+#      compiler from the cache key (`...-Debug---NoSanitizers`) while ci passes gcc/g++
+#      (`...-Debug-gcc-g++-NoSanitizers`) -> key mismatch -> ci never restored them.
+#
+# This workflow mirrors the ci-tests `build` matrix EXACTLY (container, build-type, compiler,
+# cxx-flags, sanitizers, cache-key-suffix) and reuses the same composite builder, so the
+# cache keys AND the per-file ccache hashes match what PRs produce. It is build-only: no
+# tests run here, so warming costs a compile but not the full test suite.
+#
+# IMPORTANT: keep the matrix below in lockstep with the `build` job matrix in ci.yml. If the
+# two drift, PRs will silently stop getting warm caches for the drifted configs.
+name: cache-warm
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  # Supersede an in-flight warm when a newer commit lands on the same branch.
+  group: cache-warm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  warm:
+    if: github.repository == 'dragonflydb/dragonfly'
+    strategy:
+      fail-fast: false
+      matrix:
+        # Mirror of ci.yml `build` matrix.
+        container: ["ubuntu-dev:24", "alpine-dev:latest"]
+        build-type: [Debug, Release]
+        compiler: [{ cxx: g++, c: gcc }]
+        cxx_flags: ["-Werror -no-pie"]
+        sanitizers: ["NoSanitizers"]
+        include:
+          - container: "alpine-dev:latest"
+            build-type: Debug
+            compiler: { cxx: clang++, c: clang }
+            cxx_flags: ""
+            sanitizers: "NoSanitizers"
+          - container: "ubuntu-dev:24"
+            build-type: Debug
+            compiler: { cxx: clang++, c: clang }
+            cxx_flags: "-Wno-error=unused-command-line-argument"
+            sanitizers: "Sanitizers"
+            ccache-max-size: "2G"
+
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/romange/${{ matrix.container }}
+      options: --security-opt seccomp=unconfined --sysctl "net.ipv6.conf.all.disable_ipv6=0"
+      volumes:
+        - /:/hostroot
+        - /mnt:/mnt
+      credentials:
+        username: ${{ github.repository_owner }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Free up disk space
+        run: |
+          rm -rf /hostroot/usr/share/dotnet /hostroot/usr/local/share/boost \
+                 /hostroot/usr/local/lib/android /hostroot/opt/ghc || true
+
+      # Build only (no tests) to populate ccache; ccache-save writes the warm cache to
+      # refs/heads/main under the exact same key a PR will look up.
+      - name: Warm ccache (build only)
+        uses: ./.github/actions/builder
+        with:
+          enable-ccache: 'true'
+          ccache-save: 'true'
+          build-type: ${{ matrix.build-type }}
+          cache-key-suffix: ${{ matrix.container }}
+          ccache-max-size: ${{ matrix.ccache-max-size || '1G' }}
+          c-compiler: ${{ matrix.compiler.c }}
+          cxx-compiler: ${{ matrix.compiler.cxx }}
+          cxx-flags: ${{ matrix.cxx_flags }}
+          sanitizers: ${{ matrix.sanitizers }}
+          with-aws: 'OFF'

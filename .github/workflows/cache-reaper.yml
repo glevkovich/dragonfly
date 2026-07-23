@@ -35,11 +35,17 @@ jobs:
           set -euo pipefail
 
           # Repo-wide cache usage (10 GB limit), printed before/after so the log shows what was reclaimed.
+          # NOTE: deliberately NOT using `gh api .../actions/cache/usage` here - that aggregate
+          # endpoint is an async, separately-refreshed rollup and can still report pre-deletion
+          # totals for a while after a delete. `gh cache list` hits the live cache-metadata store
+          # directly (confirmed consistent immediately after deletes), so we sum sizeInBytes
+          # ourselves instead of trusting the lagging aggregate.
           print_repo_cache_usage() {
-            gh api "repos/$GH_REPO/actions/cache/usage" --jq \
-              '"Repo cache: \(.active_caches_size_in_bytes/1048576|floor) MB used, "
-               + "\(.active_caches_count) caches "
-               + "(limit 10240 MB, \((10737418240 - .active_caches_size_in_bytes)/1048576|floor) MB free)"'
+            gh cache list --limit 1000 --json sizeInBytes --jq \
+              '(map(.sizeInBytes) | add // 0) as $bytes
+               | "Repo cache: \($bytes/1048576|floor) MB used, "
+                 + "\(length) caches "
+                 + "(limit 10240 MB, \((10737418240 - $bytes)/1048576|floor) MB free)"'
           }
 
           echo "== Before cleanup =="
@@ -47,10 +53,12 @@ jobs:
 
           if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
             # PR closed/merged: delete every cache scoped to this PR ref in one non-interactive call.
-            echo "PR closed - deleting all caches for $PR_REF"
+            before_count=$(gh cache list --ref "$PR_REF" --json id --jq 'length')
+            echo "PR closed - deleting all caches for $PR_REF ($before_count found)"
             if ! gh cache delete --all --ref "$PR_REF" --succeed-on-no-caches; then
               echo "::warning::Some caches for $PR_REF may not have been deleted; 7-day/LRU will reclaim leftovers."
             fi
+            echo "Deleted $before_count cache(s) for $PR_REF"
           else
             # Scheduled/manual: keep the newest cache per (ref, config), delete the older duplicate copies.
             echo "Scheduled dedup - keeping newest per (ref, config), deleting older copies"
@@ -62,11 +70,14 @@ jobs:
             if [ -z "$stale" ]; then
               echo "No stale duplicate caches."
             else
+              deleted=0
               while IFS=$'\t' read -r id ref key; do
                 [ -n "$id" ] || continue
                 echo "Deleting stale cache: $key (ref=$ref, id=$id)"
                 gh cache delete "$id" || echo "::warning::failed to delete id=$id"
+                deleted=$((deleted + 1))
               done <<< "$stale"
+              echo "Deleted $deleted stale duplicate cache(s)"
             fi
           fi
 

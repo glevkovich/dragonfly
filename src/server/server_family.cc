@@ -2544,6 +2544,10 @@ Metrics ServerFamily::GetMetrics(Namespace* ns, const MetricsCollectOpts& opts) 
   result.traverse_ttl_per_sec /= 6;
   result.delete_ttl_per_sec /= 6;
 
+  // proactor_idle_ratio was summed across proactors in Merge; average it back to 0..1.
+  if (!partials.empty())
+    result.proactor_idle_ratio /= partials.size();
+
   if (!IsMaster()) {
     result.replica_side_info = GetReplicaSummary();
   }
@@ -2755,6 +2759,7 @@ string ServerFamily::FormatInfoMetrics(const Metrics& m, std::string_view sectio
     append("total_handshakes_completed", conn_stats.handshakes_completed);
     append("total_commands_processed", conn_stats.command_cnt_main + conn_stats.command_cnt_other);
     append("instantaneous_ops_per_sec", m.qps);
+    append("proactor_idle_ratio", m.proactor_idle_ratio);
     append("total_pipelined_commands", conn_stats.pipelined_cmd_cnt);
     append("pipeline_throttle_total", conn_stats.pipeline_throttle_count);
     append("batch_read_commands_total", m.coordinator_stats.batch_read_commands_total);
@@ -2763,6 +2768,12 @@ string ServerFamily::FormatInfoMetrics(const Metrics& m, std::string_view sectio
     append("batch_write_commands_bytes", m.coordinator_stats.batch_write_commands_bytes);
     append("rw_throttle_batches_total", m.coordinator_stats.rw_throttle_batches_total);
     append("pipelined_latency_usec", conn_stats.pipelined_cmd_latency);
+    append("pipeline_idle_parks", conn_stats.pipeline_idle_parks);
+    append("pipeline_reply_wait_parks", conn_stats.pipeline_reply_wait_parks);
+    append("pipeline_reply_wait_park_ratio",
+           conn_stats.pipeline_idle_parks
+               ? double(conn_stats.pipeline_reply_wait_parks) / conn_stats.pipeline_idle_parks
+               : 0.0);
     append("total_net_input_bytes", conn_stats.io_read_bytes);
     append("connection_migrations", conn_stats.num_migrations);
     append("connection_recv_provided_calls", conn_stats.num_recv_provided_calls);

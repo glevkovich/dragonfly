@@ -3070,10 +3070,14 @@ bool Connection::ExecuteBatch() {
       DCHECK(!cc_->async_dispatch);
       cc_->sync_dispatch = true;
       cc_->async_dispatch = is_true_pipeline;
+      // Issue #260: allow parse-in-proactor while the fiber is blocked on the owning shard.
+      // Safe: the parser is idle at this point (ParseLoop finished before ExecuteBatch starts).
+      fiber_park_spot_ = FiberParkSpot::kSimpleHop;
     }
     uint64_t dispatch_start = CycleClock::Now();
     auto dispatch_res = service_->DispatchCommandSimple(cmd, mode);
     if (ioloop_v2_) {
+      fiber_park_spot_ = FiberParkSpot::kNone;
       cc_->sync_dispatch = false;
       cc_->async_dispatch = false;
     }
@@ -3130,8 +3134,17 @@ bool Connection::ReplyBatch() {
       // Pure coroutine replies don't preserve lifetimes
       const bool suspended = cmd->IsSuspendedReply();
       std::optional<SinkReplyBuilder::ScopePause> pause;
-      if (suspended)
+      if (suspended) {
         pause.emplace(reply_builder_.get());
+        // A suspended (coroutine) reply may fiber-block inside SendReply when its continuation does
+        // external I/O (e.g. a tiered/disk read) or another shard hop. Mark the park spot so
+        // parse-in-proactor can grow the next batch while we wait. Safe re-entrancy: the parser is
+        // idle here (ParseLoop finished before ReplyBatch) and parse-in-proactor only *appends* at
+        // the tail (parsed_tail_), disjoint from the head this loop is retiring. NOTE: only fires
+        // for suspended replies that actually block (tiered/multi-hop); in-memory replies do not
+        // suspend, so this is a no-op for standard workloads. Verify with a tiered+pipeline test.
+        fiber_park_spot_ = FiberParkSpot::kSendReply;
+      }
 
       // V2 in-flight tracking:
       // - A command isn't "done" until its reply is written. A suspended (coroutine) reply can do
@@ -3142,6 +3155,7 @@ bool Connection::ReplyBatch() {
       //   SendCheckpoint's HasInFlightCommands() check) and waits for the write to land.
       // - A non-suspended reply just copies an already-built payload and can't preempt.
       cmd->SendReply();
+      fiber_park_spot_ = FiberParkSpot::kNone;
       AdvanceParsedHead(cmd->next);
       replied++;
 
@@ -3382,11 +3396,16 @@ void Connection::OnRecvNotification(const util::FiberSocketBase::RecvNotificatio
     if (io_buf_.InputLen() > before)
       ++GetLocalConnStats().proactor_reads;
 
-    // Parse In Proactor: parse newly-read bytes while the fiber is parked in a squash hop, so the
-    // next batch is already larger on resume.
-    // - This is safe because the parser is idle at kSquashHop.
+    // Parse In Proactor: parse newly-read bytes while the fiber is parked in a squash hop or a
+    // suspended (coroutine) reply, so the next batch is already larger on resume.
+    // - This is safe because the parser is idle at kSquashHop, kSendReply, and kSimpleHop.
+    //   At kSimpleHop the parser has already finished its batch (ParseLoop completes before
+    //   ExecuteBatch runs), so no concurrent access to the parser state.
     // - Calling ParseRedis() with max_busy_cycles==0: proactor's callbacks must not suspend.
-    if (pipeline_parse_in_proactor_cached && (fiber_park_spot_ == FiberParkSpot::kSquashHop) &&
+    if (pipeline_parse_in_proactor_cached &&
+        (fiber_park_spot_ == FiberParkSpot::kSquashHop ||
+         fiber_park_spot_ == FiberParkSpot::kSendReply ||
+         fiber_park_spot_ == FiberParkSpot::kSimpleHop) &&
         redis_parser_ && (io_buf_.InputLen() > 0)) {
       size_t cmds_before = parsed_cmd_q_len_;
       ParserStatus st = ParseRedis(io_buf_, 0, /*enqueue_only=*/true);
@@ -3707,6 +3726,17 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoopV2() {
         return ec;
       }
 
+      // Count this idle-await park. When HasInFlightCommands() is true the fiber is sleeping
+      // while a dispatched command's reply is still pending - a coroutine reply-wait window
+      // (cross-shard/async completion) that background proactor work could exploit. Sequential
+      // async completions re-park once each, so this also tracks wake amplification.
+      {
+        auto& cstats = GetLocalConnStats();
+        ++cstats.pipeline_idle_parks;
+        if (HasInFlightCommands())
+          ++cstats.pipeline_reply_wait_parks;
+      }
+
       fiber_park_spot_ = FiberParkSpot::kIdleAwait;
       io_event_.await([this] { return ShouldWakeIdle(); });
       fiber_park_spot_ = FiberParkSpot::kNone;
@@ -3801,6 +3831,8 @@ void ResetStats() {
   cstats.io_read_bytes = 0;
   cstats.proactor_reads = 0;
   cstats.proactor_parse = 0;
+  cstats.pipeline_idle_parks = 0;
+  cstats.pipeline_reply_wait_parks = 0;
 
   tl_facade_stats->reply_stats = {};
   if (io_req_size_hist)

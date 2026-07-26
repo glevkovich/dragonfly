@@ -40,12 +40,23 @@ jobs:
           # totals for a while after a delete. `gh cache list` hits the live cache-metadata store
           # directly (confirmed consistent immediately after deletes), so we sum sizeInBytes
           # ourselves instead of trusting the lagging aggregate.
+          # Also breaks the total down by category (ccache / third-party deps / everything else)
+          # so it's obvious at a glance how much of the 10 GB budget each cache type is eating,
+          # without having to cross-reference key prefixes by hand.
           print_repo_cache_usage() {
-            gh cache list --limit 1000 --json sizeInBytes --jq \
-              '(map(.sizeInBytes) | add // 0) as $bytes
-               | "Repo cache: \($bytes/1048576|floor) MB used, "
-                 + "\(length) caches "
-                 + "(limit 10240 MB, \((10737418240 - $bytes)/1048576|floor) MB free)"'
+            gh cache list --limit 1000 --json sizeInBytes,key --jq '
+              def cat:
+                if (.key | test("^dfly-ccache-")) then "ccache"
+                elif (.key | test("^dfly-deps-")) then "3rd-party deps"
+                else "other" end;
+              (map(.sizeInBytes) | add // 0) as $total
+              | (10737418240 - $total) as $free
+              | (group_by(cat) | map({cat: (.[0] | cat), count: length, mb: ((map(.sizeInBytes) | add) / 1048576 | floor)})
+                 | sort_by(-.mb)) as $groups
+              | "Repo cache: \($total/1048576|floor) MB used, \(length) caches "
+                + "(limit 10240 MB, \($free/1048576|floor) MB free)",
+                ($groups[] | "  \(.cat): \(.count) caches, \(.mb) MB")
+            '
           }
 
           echo "== Before cleanup =="

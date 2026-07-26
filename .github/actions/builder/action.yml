@@ -113,6 +113,7 @@ runs:
       # outcome instead of the whole job's, and so a failed build can clear this exact key
       # instead of an automatic post-job save silently persisting a broken tree (see the two
       # steps after "Build" below).
+      id: deps-cache-restore
       uses: actions/cache/restore@v5
       with:
         path: |
@@ -122,6 +123,28 @@ runs:
         restore-keys: |
           ${{ steps.deps-cache-key.outputs.prefix }}
           ${{ steps.deps-cache-key.outputs.broader-prefix }}
+
+    - name: Report third-party deps cache hit/miss
+      # actions/cache/restore's own log lines are easy to miss; print an explicit, greppable
+      # summary (and a Job Summary entry) so it's obvious whether this run got a full hit
+      # (nothing to rebuild), a partial/fallback hit (restored an older key via restore-keys -
+      # ninja will still rebuild whatever changed), or a full miss (cold third-party build).
+      shell: bash
+      run: |
+        if [ "${{ steps.deps-cache-restore.outputs.cache-hit }}" = "true" ]; then
+          STATUS="FULL HIT (exact key match) - third_party/_deps fully restored, no rebuild expected"
+        elif [ -n "${{ steps.deps-cache-restore.outputs.cache-matched-key }}" ]; then
+          STATUS="PARTIAL HIT (restore-keys fallback: '${{ steps.deps-cache-restore.outputs.cache-matched-key }}') - ninja will rebuild whatever changed since that key"
+        else
+          STATUS="MISS - no matching cache found, full cold third-party build expected (~140s)"
+        fi
+        echo "Third-party deps cache: ${STATUS}"
+        echo "  primary key: ${{ steps.deps-cache-key.outputs.key }}"
+        {
+          echo "### Third-party deps cache"
+          echo "- **${STATUS}**"
+          echo "- primary key: \`${{ steps.deps-cache-key.outputs.key }}\`"
+        } >> "${GITHUB_STEP_SUMMARY}"
 
     - name: Configure CMake
       shell: bash

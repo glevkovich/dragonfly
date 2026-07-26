@@ -433,7 +433,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
-      actions: write  # lets the builder action delete its own cache key when the build fails
+      actions: write
 
     container:
       image: ghcr.io/romange/ubuntu-dev:24

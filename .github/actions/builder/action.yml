@@ -99,7 +99,7 @@ runs:
         path: |
           ${{ github.workspace }}/${{ inputs.build-dir }}/third_party
           ${{ github.workspace }}/${{ inputs.build-dir }}/_deps
-        key: dfly-deps-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-${{ hashFiles('src/external_libs.cmake', '**/CMakeLists.txt', 'patches/**') }}
+        key: dfly-deps-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-${{ hashFiles('src/external_libs.cmake', '**/CMakeLists.txt', 'helio/cmake/third_party.cmake', 'patches/**', 'helio/patches/**') }}
         restore-keys: |
           dfly-deps-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-
           dfly-deps-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-

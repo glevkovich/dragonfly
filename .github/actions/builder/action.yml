@@ -222,7 +222,17 @@ runs:
       # must never do is save when Configure/Build itself failed or was cancelled, since that
       # could persist a half-built/corrupt third_party tree under this exact key - every future
       # run on the same commit would then keep restoring that same broken snapshot forever.
-      if: success()
+      #
+      # Also skip when the restore above was already an exact hit (cache-hit == 'true'): the
+      # combined actions/cache action does this automatically, but restore/save split loses that
+      # default, so we replicate it explicitly. Without this, a PR whose hash matches main's
+      # (i.e. it didn't touch any dependency-defining file, the common case) would otherwise
+      # save a brand new, byte-identical, PR-branch-scoped copy of the cache on every run -
+      # GitHub Actions cache writes are scoped to the ref that created them, so a PR run can READ
+      # main's cache via base-branch fallback but a save always creates a new entry in the PR's
+      # own scope unless we skip it ourselves. A PR should not need its own dedicated 3rd-party
+      # cache when nothing dependency-related changed.
+      if: success() && steps.deps-cache-restore.outputs.cache-hit != 'true'
       uses: actions/cache/save@v5
       with:
         path: |

@@ -94,10 +94,20 @@ runs:
     - name: Compute third-party deps cache key
       # Computed once and reused by restore/save/failure-cleanup below so all three can never
       # drift apart (a hand-copied key in 3 places risks a typo breaking the save/delete match).
+      #
+      # hashFiles() list: only files that actually declare/version 3rd-party deps
+      # (add_third_party/ExternalProject_Add/FetchContent_Declare calls or their patches). Uses
+      # 'CMakeLists.txt' + 'src/CMakeLists.txt' explicitly (NOT '**/CMakeLists.txt'): only
+      # src/CMakeLists.txt includes external_libs.cmake - the other dozen module CMakeLists.txt
+      # files just list Dragonfly's own sources and have nothing to do with 3rd-party deps, so
+      # hashing all of them caused false invalidations on every unrelated source-file addition.
+      # If a 3rd-party dependency declaration is ever added to a NEW file (another CMakeLists.txt,
+      # a new .cmake file, etc.), that file MUST be added to this hashFiles() list too - otherwise
+      # the cache will silently keep serving stale/wrong third-party artifacts for that change.
       id: deps-cache-key
       shell: bash
       run: |
-        HASH="${{ hashFiles('src/external_libs.cmake', '**/CMakeLists.txt', 'helio/cmake/third_party.cmake', 'patches/**', 'helio/patches/**') }}"
+        HASH="${{ hashFiles('src/external_libs.cmake', 'CMakeLists.txt', 'src/CMakeLists.txt', 'helio/cmake/third_party.cmake', 'patches/**', 'helio/patches/**') }}"
         PREFIX="dfly-deps-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-"
         BROADER_PREFIX="dfly-deps-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-"
         {

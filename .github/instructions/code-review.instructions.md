@@ -46,6 +46,12 @@ Dragonfly is a high-performance, Redis-compatible in-memory data store written i
 - Not following naming conventions: `snake_case` variables, `PascalCase` functions, `kPascalCase` constants
 - Code that won't pass pre-commit hooks (clang-format, 100 char limit)
 
+**CI Cache Correctness**:
+- If a PR adds/changes a 3rd-party dependency declaration (`add_third_party`, `ExternalProject_Add`,
+  `FetchContent_Declare`) in a file NOT already covered by the deps-cache `hashFiles()` list in
+  `.github/actions/builder/action.yml` ("Compute third-party deps cache key" step), that file must
+  be added to the list - otherwise CI will keep restoring a stale third-party cache for that change.
+
 ### 🟢 SUGGESTIONS (Non-blocking, comment only if obvious)
 
 - Over-engineering: adding abstraction layers, feature flags, or configurability not requested

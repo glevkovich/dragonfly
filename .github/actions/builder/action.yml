@@ -91,18 +91,37 @@ runs:
         save: ${{ inputs.ccache-save }}
         verbose: 1
 
-    - name: Cache third-party dependencies
-      # Third-party libraries (~140s of a cold build) change rarely. Restoring the
-      # built artifacts and ExternalProject stamps lets ninja skip rebuilding them.
-      uses: actions/cache@v4
+    - name: Compute third-party deps cache key
+      # Computed once and reused by restore/save/failure-cleanup below so all three can never
+      # drift apart (a hand-copied key in 3 places risks a typo breaking the save/delete match).
+      id: deps-cache-key
+      shell: bash
+      run: |
+        HASH="${{ hashFiles('src/external_libs.cmake', '**/CMakeLists.txt', 'helio/cmake/third_party.cmake', 'patches/**', 'helio/patches/**') }}"
+        PREFIX="dfly-deps-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-"
+        BROADER_PREFIX="dfly-deps-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-"
+        {
+          echo "key=${PREFIX}${HASH}"
+          echo "prefix=${PREFIX}"
+          echo "broader-prefix=${BROADER_PREFIX}"
+        } >> "${GITHUB_OUTPUT}"
+
+    - name: Restore third-party deps cache
+      # Third-party libraries (~140s of a cold build) change rarely. Restoring the built
+      # artifacts and ExternalProject stamps lets ninja skip rebuilding them. Restore-only (not
+      # the combined actions/cache) so the save below can be gated on the BUILD step's own
+      # outcome instead of the whole job's, and so a failed build can clear this exact key
+      # instead of an automatic post-job save silently persisting a broken tree (see the two
+      # steps after "Build" below).
+      uses: actions/cache/restore@v5
       with:
         path: |
           ${{ github.workspace }}/${{ inputs.build-dir }}/third_party
           ${{ github.workspace }}/${{ inputs.build-dir }}/_deps
-        key: dfly-deps-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-${{ hashFiles('src/external_libs.cmake', '**/CMakeLists.txt', 'helio/cmake/third_party.cmake', 'patches/**', 'helio/patches/**') }}
+        key: ${{ steps.deps-cache-key.outputs.key }}
         restore-keys: |
-          dfly-deps-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-
-          dfly-deps-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-
+          ${{ steps.deps-cache-key.outputs.prefix }}
+          ${{ steps.deps-cache-key.outputs.broader-prefix }}
 
     - name: Configure CMake
       shell: bash
@@ -171,3 +190,37 @@ runs:
           echo "===== ccache stats (this build) ====="
           ccache -s || true
         fi
+
+    - name: Save third-party deps cache
+      # Gated on success() of the steps run SO FAR in this job (Configure/Build), not the whole
+      # job's final outcome: this step runs right after "Build", before any test steps the
+      # caller appends afterwards, so success() here means "the build itself succeeded" even if
+      # later test steps fail - we still want to keep a good deps build in that case. What we
+      # must never do is save when Configure/Build itself failed or was cancelled, since that
+      # could persist a half-built/corrupt third_party tree under this exact key - every future
+      # run on the same commit would then keep restoring that same broken snapshot forever.
+      if: success()
+      uses: actions/cache/save@v5
+      with:
+        path: |
+          ${{ github.workspace }}/${{ inputs.build-dir }}/third_party
+          ${{ github.workspace }}/${{ inputs.build-dir }}/_deps
+        key: ${{ steps.deps-cache-key.outputs.key }}
+
+    - name: Clear third-party deps cache on build failure
+      # If Configure/Build failed, proactively delete this exact cache key instead of leaving
+      # whatever is on disk (possibly a half-built tree, or - rarer - a cache someone/something
+      # corrupted out-of-band) to be silently reused by the next run. We don't try to prove the
+      # 3rd-party libs actually caused the failure: build failures are rare, and the cost of
+      # being wrong is just one extra ~140s third-party rebuild next time (ccache and everything
+      # else stay untouched) - far cheaper than a permanently-poisoned cache that keeps
+      # reproducing the same failure on every future run of this commit/config.
+      if: failure()
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        echo "Build failed - clearing third-party deps cache key so the next run doesn't reuse it:"
+        echo "  ${{ steps.deps-cache-key.outputs.key }}"
+        gh cache delete "${{ steps.deps-cache-key.outputs.key }}" --repo "${{ github.repository }}" || \
+          echo "::warning::Could not delete the third-party deps cache (needs 'permissions: actions: write' on this job, or nothing was saved under this key yet). If build failures persist, clear it manually: gh cache delete '${{ steps.deps-cache-key.outputs.key }}'"

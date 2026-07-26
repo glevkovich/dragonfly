@@ -42,6 +42,7 @@ jobs:
       contents: read
       id-token: write
       packages: read
+      actions: write  # lets the builder action delete its own cache key when the build fails
 
     env:
       CPP_JUNIT_DIR: ${{ github.workspace }}/test-results/junit/cpp
@@ -432,6 +433,7 @@ jobs:
     permissions:
       id-token: write
       contents: read
+      actions: write  # lets the builder action delete its own cache key when the build fails
 
     container:
       image: ghcr.io/romange/ubuntu-dev:24

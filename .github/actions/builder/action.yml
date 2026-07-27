@@ -103,8 +103,6 @@ runs:
       #   changes a dependency's fetched source or build output, or an old cache could be restored incorrectly.
       # - internal.cmake, sanitizers, and cxx-flags affect the compiler settings inherited by dependencies, so each
       #   setting combination needs its own cache entry.
-      # - ExternalProject completion markers live under CMakeFiles, outside third_party. Cache them with third_party
-      #   so Ninja does not rerun non-idempotent download/patch steps against restored sources.
       # - ccache is separate: it caches individual object files and also covers src/.
       if: inputs.enable-deps-cache == 'true'
       id: deps-cache-key
@@ -126,7 +124,7 @@ runs:
       # - actions/cache/restore only downloads a cache; unlike the combined cache action, it never saves automatically.
       # - The separate Save step can therefore require a successful build, while the failure step can delete this key.
       # - Cache both directories: third_party contains ExternalProject builds; _deps contains FetchContent builds.
-      # - Cache ExternalProject completion markers too: they sit outside third_party but make Ninja skip restored work.
+      #   third_party holds the ExternalProject sources, per-step stamps and installed libs; that is all Ninja needs.
       # - Paths are workspace-relative because actions/cache runs inside the job's container, where host paths do not
       #   exist.
       if: inputs.enable-deps-cache == 'true'
@@ -136,44 +134,17 @@ runs:
         path: |
           ${{ inputs.build-dir }}/third_party
           ${{ inputs.build-dir }}/_deps
-          ${{ inputs.build-dir }}/CMakeFiles/*_project-complete
         key: ${{ steps.deps-cache-key.outputs.key }}
 
-    - name: Preserve restored dependency completion markers
-      # - CMake recreates CMakeFiles during a fresh configure, so preserve the restored markers until it completes.
-      # - Treat a cache hit with no markers as corrupt: continuing would rerun non-idempotent ExternalProject steps.
-      if: inputs.enable-deps-cache == 'true' && steps.deps-cache-restore.outputs.cache-hit == 'true'
-      id: deps-cache-markers
-      shell: bash
-      run: |
-        marker_dir="${RUNNER_TEMP}/dfly-deps-completion-markers"
-        marker_source="${GITHUB_WORKSPACE}/${{ inputs.build-dir }}/CMakeFiles"
-        rm -rf "${marker_dir}"
-        mkdir -p "${marker_dir}"
-
-        marker_files=()
-        if [[ -d "${marker_source}" ]]; then
-          mapfile -d '' -t marker_files < <(
-            find "${marker_source}" -maxdepth 1 -type f -name '*_project-complete' -print0
-          )
-        fi
-        if ((${#marker_files[@]} == 0)); then
-          echo "::error title=deps-cache::Exact cache hit contains no ExternalProject completion markers."
-          exit 1
-        fi
-
-        cp -a "${marker_files[@]}" "${marker_dir}"/
-        echo "Preserved ${#marker_files[@]} ExternalProject completion marker(s)."
-
     - name: Report cache status (deps)
-      # - Only exact cache keys are safe because completion markers make restored ExternalProjects appear complete.
+      # - Only exact cache keys are used (no restore-keys), so a hit means the config matches the saved artifacts.
       if: always() && inputs.enable-deps-cache == 'true'
       shell: bash
       run: |
         if [ "${{ steps.deps-cache-restore.outputs.cache-hit }}" = "true" ]; then
-          STATUS="FULL HIT (exact key match) - third_party/_deps and completion markers restored"
+          STATUS="FULL HIT (exact key match) - third_party/_deps restored"
         else
-          STATUS="MISS - no matching cache found, full cold third-party build expected (~140s)"
+          STATUS="MISS - no matching cache found, full cold third-party build expected"
         fi
         echo "Third-party deps cache: ${STATUS}"
         echo "  primary key: ${{ steps.deps-cache-key.outputs.key }}"
@@ -237,12 +208,18 @@ runs:
         echo "Running: ${CMAKE_CMD[@]}"
         "${CMAKE_CMD[@]}"
 
-        # Fresh CMake configuration recreates CMakeFiles, so restore the completion markers saved above.
-        marker_dir="${RUNNER_TEMP}/dfly-deps-completion-markers"
-        if [[ -d "${marker_dir}" ]]; then
-          marker_count=$(find "${marker_dir}" -maxdepth 1 -type f -name '*_project-complete' | wc -l)
-          cp -a "${marker_dir}"/. "${GITHUB_WORKSPACE}/${{ inputs.build-dir }}/CMakeFiles/"
-          echo "Restored ${marker_count} ExternalProject completion marker(s) after CMake configuration."
+        # On an exact cache hit, the restored third_party tree already contains every ExternalProject's patched
+        # sources, per-step stamps and installed libs. But `cmake -B` above just regenerated each step's *-info.txt
+        # and *.cmake scripts with fresh mtimes, so Ninja would consider the download/patch/build/install steps out
+        # of date and rerun them. Re-running a non-idempotent PATCH_COMMAND (e.g. the AWS SDK 'patch -p1') against
+        # already-patched sources fails the build. Touch every restored stamp so it is newer than the regenerated
+        # scripts; Ninja then treats the cached third-party work as up to date and skips it.
+        if [ "${{ steps.deps-cache-restore.outputs.cache-hit }}" = "true" ]; then
+          stamp_root="${GITHUB_WORKSPACE}/${{ inputs.build-dir }}/third_party/src"
+          if [[ -d "${stamp_root}" ]]; then
+            find "${stamp_root}" -type f -path '*-stamp/*' -exec touch {} +
+            echo "Refreshed ExternalProject stamp mtimes so Ninja reuses the cached third-party build."
+          fi
         fi
 
     - name: Build
@@ -260,22 +237,6 @@ runs:
           ccache -s || true
         fi
 
-    - name: Validate dependency completion markers
-      # - A cold build must produce these markers before its archive can serve a later exact restore hit.
-      if: success() && inputs.enable-deps-cache == 'true' && steps.deps-cache-restore.outputs.cache-hit != 'true'
-      shell: bash
-      run: |
-        marker_source="${GITHUB_WORKSPACE}/${{ inputs.build-dir }}/CMakeFiles"
-        marker_count=0
-        if [[ -d "${marker_source}" ]]; then
-          marker_count=$(find "${marker_source}" -maxdepth 1 -type f -name '*_project-complete' | wc -l)
-        fi
-        echo "Cold build produced ${marker_count} ExternalProject completion marker(s)."
-        if ((marker_count == 0)); then
-          echo "::error title=deps-cache::Refusing to save a dependency cache without ExternalProject completion markers."
-          exit 1
-        fi
-
     - name: Save cache (deps)
       # - Save only after configuration and build succeed. Later test failures must not discard a valid deps cache.
       # - Never save a failed or cancelled build: it may contain incomplete artifacts.
@@ -287,15 +248,14 @@ runs:
         path: |
           ${{ inputs.build-dir }}/third_party
           ${{ inputs.build-dir }}/_deps
-          ${{ inputs.build-dir }}/CMakeFiles/*_project-complete
         key: ${{ steps.deps-cache-key.outputs.key }}
 
     - name: Clear cache on build failure (deps)
-      # - On failure, clear any non-exact cache record for this ref and key.
-      # - Also delete an exact hit whose marker validation failed: it cannot safely serve another build.
+      # - On failure of a cold build, clear the cache record so the next run rebuilds instead of reusing partial work.
+      # - Leave an exact hit in place: it was a valid, previously-saved cache and this run's failure is unrelated to it.
       # - --ref limits deletion to this run's ref. Without it, a matching pull-request key could delete main's cache.
       # - Skip cleanup when key computation failed before producing a key.
-      if: failure() && inputs.enable-deps-cache == 'true' && steps.deps-cache-key.outputs.key != '' && (steps.deps-cache-restore.outputs.cache-hit != 'true' || steps.deps-cache-markers.outcome == 'failure')
+      if: failure() && inputs.enable-deps-cache == 'true' && steps.deps-cache-key.outputs.key != '' && steps.deps-cache-restore.outputs.cache-hit != 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}

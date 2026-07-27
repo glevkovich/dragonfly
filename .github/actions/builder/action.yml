@@ -141,17 +141,29 @@ runs:
 
     - name: Preserve restored dependency completion markers
       # - CMake recreates CMakeFiles during a fresh configure, so preserve the restored markers until it completes.
+      # - Treat a cache hit with no markers as corrupt: continuing would rerun non-idempotent ExternalProject steps.
       if: inputs.enable-deps-cache == 'true' && steps.deps-cache-restore.outputs.cache-hit == 'true'
+      id: deps-cache-markers
       shell: bash
       run: |
         marker_dir="${RUNNER_TEMP}/dfly-deps-completion-markers"
         marker_source="${GITHUB_WORKSPACE}/${{ inputs.build-dir }}/CMakeFiles"
         rm -rf "${marker_dir}"
         mkdir -p "${marker_dir}"
+
+        marker_files=()
         if [[ -d "${marker_source}" ]]; then
-          find "${marker_source}" -maxdepth 1 -type f -name '*_project-complete' \
-            -exec cp -a {} "${marker_dir}"/ \;
+          mapfile -d '' -t marker_files < <(
+            find "${marker_source}" -maxdepth 1 -type f -name '*_project-complete' -print0
+          )
         fi
+        if ((${#marker_files[@]} == 0)); then
+          echo "::error title=deps-cache::Exact cache hit contains no ExternalProject completion markers."
+          exit 1
+        fi
+
+        cp -a "${marker_files[@]}" "${marker_dir}"/
+        echo "Preserved ${#marker_files[@]} ExternalProject completion marker(s)."
 
     - name: Report cache status (deps)
       # - Only exact cache keys are safe because completion markers make restored ExternalProjects appear complete.
@@ -159,7 +171,7 @@ runs:
       shell: bash
       run: |
         if [ "${{ steps.deps-cache-restore.outputs.cache-hit }}" = "true" ]; then
-          STATUS="FULL HIT (exact key match) - third_party/_deps fully restored, no rebuild expected"
+          STATUS="FULL HIT (exact key match) - third_party/_deps and completion markers restored"
         else
           STATUS="MISS - no matching cache found, full cold third-party build expected (~140s)"
         fi
@@ -227,8 +239,10 @@ runs:
 
         # Fresh CMake configuration recreates CMakeFiles, so restore the completion markers saved above.
         marker_dir="${RUNNER_TEMP}/dfly-deps-completion-markers"
-        if compgen -G "${marker_dir}/*_project-complete" > /dev/null; then
+        if [[ -d "${marker_dir}" ]]; then
+          marker_count=$(find "${marker_dir}" -maxdepth 1 -type f -name '*_project-complete' | wc -l)
           cp -a "${marker_dir}"/. "${GITHUB_WORKSPACE}/${{ inputs.build-dir }}/CMakeFiles/"
+          echo "Restored ${marker_count} ExternalProject completion marker(s) after CMake configuration."
         fi
 
     - name: Build
@@ -244,6 +258,22 @@ runs:
         if [ "${{ inputs.enable-ccache }}" = "true" ]; then
           echo "===== ccache stats (this build) ====="
           ccache -s || true
+        fi
+
+    - name: Validate dependency completion markers
+      # - A cold build must produce these markers before its archive can serve a later exact restore hit.
+      if: success() && inputs.enable-deps-cache == 'true' && steps.deps-cache-restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        marker_source="${GITHUB_WORKSPACE}/${{ inputs.build-dir }}/CMakeFiles"
+        marker_count=0
+        if [[ -d "${marker_source}" ]]; then
+          marker_count=$(find "${marker_source}" -maxdepth 1 -type f -name '*_project-complete' | wc -l)
+        fi
+        echo "Cold build produced ${marker_count} ExternalProject completion marker(s)."
+        if ((marker_count == 0)); then
+          echo "::error title=deps-cache::Refusing to save a dependency cache without ExternalProject completion markers."
+          exit 1
         fi
 
     - name: Save cache (deps)
@@ -262,10 +292,10 @@ runs:
 
     - name: Clear cache on build failure (deps)
       # - On failure, clear any non-exact cache record for this ref and key.
-      # - Do not delete an exact restore hit: this run cannot overwrite it because Save skips exact hits.
+      # - Also delete an exact hit whose marker validation failed: it cannot safely serve another build.
       # - --ref limits deletion to this run's ref. Without it, a matching pull-request key could delete main's cache.
       # - Skip cleanup when key computation failed before producing a key.
-      if: failure() && inputs.enable-deps-cache == 'true' && steps.deps-cache-key.outputs.key != '' && steps.deps-cache-restore.outputs.cache-hit != 'true'
+      if: failure() && inputs.enable-deps-cache == 'true' && steps.deps-cache-key.outputs.key != '' && (steps.deps-cache-restore.outputs.cache-hit != 'true' || steps.deps-cache-markers.outcome == 'failure')
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}

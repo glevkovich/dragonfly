@@ -98,31 +98,35 @@ runs:
 
     - name: Compute third-party deps cache key
       # - Generate one key for restore, save, and failure cleanup so those steps always use the same cache entry.
+      # - Require a caller-specific suffix: third-party artifacts are incompatible across container environments.
       # - hashFiles() includes dependency definitions, dependency build settings, and patches. Add any new file that
       #   changes a dependency's fetched source or build output, or an old cache could be restored incorrectly.
       # - internal.cmake, sanitizers, and cxx-flags affect the compiler settings inherited by dependencies, so each
       #   setting combination needs its own cache entry.
-      # - This cache restores complete third_party and _deps directories before the build. An exact hit skips fetching
-      #   and building dependencies. ccache is separate: it caches individual object files and also covers src/.
+      # - ExternalProject completion markers live under CMakeFiles, outside third_party. Cache them with third_party
+      #   so Ninja does not rerun non-idempotent download/patch steps against restored sources.
+      # - ccache is separate: it caches individual object files and also covers src/.
       if: inputs.enable-deps-cache == 'true'
       id: deps-cache-key
       shell: bash
       run: |
+        suffix="${{ inputs.cache-key-suffix }}"
+        if [[ -z "${suffix//[[:space:]]/}" || "$suffix" == "default" ]]; then
+          echo "::error title=deps-cache::enable-deps-cache is 'true' but cache-key-suffix is empty or 'default'. Pass a specific cache-key-suffix (e.g. the container image) so deps caches don't collide across configs."
+          exit 1
+        fi
         HASH="${{ hashFiles('src/external_libs.cmake', 'CMakeLists.txt', 'src/CMakeLists.txt', 'helio/cmake/third_party.cmake', 'helio/cmake/internal.cmake', 'patches/**', 'helio/patches/**') }}"
-        PREFIX="dfly-deps-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-${{ inputs.sanitizers }}-${{ inputs.cxx-flags }}-"
         if [ -z "${HASH}" ]; then
           echo "::error title=deps-cache::hashFiles() matched no files - refusing to cache under a degenerate key. Check the file list in this step."
           exit 1
         fi
-        {
-          echo "key=${PREFIX}${HASH}"
-          echo "prefix=${PREFIX}"
-        } >> "${GITHUB_OUTPUT}"
+        echo "key=dfly-deps-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-${{ inputs.sanitizers }}-${{ inputs.cxx-flags }}-${{ inputs.with-aws }}-${HASH}" >> "${GITHUB_OUTPUT}"
 
     - name: Restore cache (deps)
       # - actions/cache/restore only downloads a cache; unlike the combined cache action, it never saves automatically.
       # - The separate Save step can therefore require a successful build, while the failure step can delete this key.
       # - Cache both directories: third_party contains ExternalProject builds; _deps contains FetchContent builds.
+      # - Cache ExternalProject completion markers too: they sit outside third_party but make Ninja skip restored work.
       # - Paths are workspace-relative because actions/cache runs inside the job's container, where host paths do not
       #   exist.
       if: inputs.enable-deps-cache == 'true'
@@ -132,19 +136,16 @@ runs:
         path: |
           ${{ inputs.build-dir }}/third_party
           ${{ inputs.build-dir }}/_deps
+          ${{ inputs.build-dir }}/CMakeFiles/*_project-complete
         key: ${{ steps.deps-cache-key.outputs.key }}
-        restore-keys: |
-          ${{ steps.deps-cache-key.outputs.prefix }}
 
     - name: Report cache status (deps)
-      # - Print the exact, fallback, or miss result in the log and Job Summary.
+      # - Only exact cache keys are safe because completion markers make restored ExternalProjects appear complete.
       if: always() && inputs.enable-deps-cache == 'true'
       shell: bash
       run: |
         if [ "${{ steps.deps-cache-restore.outputs.cache-hit }}" = "true" ]; then
           STATUS="FULL HIT (exact key match) - third_party/_deps fully restored, no rebuild expected"
-        elif [ -n "${{ steps.deps-cache-restore.outputs.cache-matched-key }}" ]; then
-          STATUS="PARTIAL HIT (restore-keys fallback: '${{ steps.deps-cache-restore.outputs.cache-matched-key }}') - the build will rebuild whatever changed since that key"
         else
           STATUS="MISS - no matching cache found, full cold third-party build expected (~140s)"
         fi
@@ -236,13 +237,15 @@ runs:
         path: |
           ${{ inputs.build-dir }}/third_party
           ${{ inputs.build-dir }}/_deps
+          ${{ inputs.build-dir }}/CMakeFiles/*_project-complete
         key: ${{ steps.deps-cache-key.outputs.key }}
 
     - name: Clear cache on build failure (deps)
-      # - On failure, remove this run's cache key so a partial dependency build is never reused.
+      # - On failure, clear any non-exact cache record for this ref and key.
       # - Do not delete an exact restore hit: this run cannot overwrite it because Save skips exact hits.
       # - --ref limits deletion to this run's ref. Without it, a matching pull-request key could delete main's cache.
-      if: failure() && inputs.enable-deps-cache == 'true' && steps.deps-cache-restore.outputs.cache-hit != 'true'
+      # - Skip cleanup when key computation failed before producing a key.
+      if: failure() && inputs.enable-deps-cache == 'true' && steps.deps-cache-key.outputs.key != '' && steps.deps-cache-restore.outputs.cache-hit != 'true'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}

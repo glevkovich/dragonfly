@@ -123,8 +123,13 @@ runs:
     - name: Restore cache (deps)
       # - actions/cache/restore only downloads a cache; unlike the combined cache action, it never saves automatically.
       # - The separate Save step can therefore require a successful build, while the failure step can delete this key.
-      # - Cache both directories: third_party contains ExternalProject builds; _deps contains FetchContent builds.
-      #   third_party holds the ExternalProject sources, per-step stamps and installed libs; that is all Ninja needs.
+      # - third_party contains the ExternalProject sources, per-step stamps and installed libs; _deps contains the
+      #   FetchContent builds (e.g. abseil).
+      # - .ninja_log is REQUIRED for a usable hit. Ninja only trusts a previously-built output if its build log records
+      #   that Ninja built it. On a fresh (or tar-restored) tree without the log, Ninja re-runs every ExternalProject
+      #   step regardless of file mtimes - and re-running the non-idempotent AWS 'patch -p1' against already-patched
+      #   sources fails the build. Restoring .ninja_log makes Ninja treat the cached third_party/_deps work as done.
+      # - CMakeFiles/*_project-complete are the final ExternalProject markers; caching them keeps the hit fully clean.
       # - Paths are workspace-relative because actions/cache runs inside the job's container, where host paths do not
       #   exist.
       if: inputs.enable-deps-cache == 'true'
@@ -134,6 +139,8 @@ runs:
         path: |
           ${{ inputs.build-dir }}/third_party
           ${{ inputs.build-dir }}/_deps
+          ${{ inputs.build-dir }}/.ninja_log
+          ${{ inputs.build-dir }}/CMakeFiles/*_project-complete
         key: ${{ steps.deps-cache-key.outputs.key }}
 
     - name: Report cache status (deps)
@@ -142,7 +149,7 @@ runs:
       shell: bash
       run: |
         if [ "${{ steps.deps-cache-restore.outputs.cache-hit }}" = "true" ]; then
-          STATUS="FULL HIT (exact key match) - third_party/_deps restored"
+          STATUS="FULL HIT (exact key match) - third_party/_deps and Ninja build log restored"
         else
           STATUS="MISS - no matching cache found, full cold third-party build expected"
         fi
@@ -208,20 +215,6 @@ runs:
         echo "Running: ${CMAKE_CMD[@]}"
         "${CMAKE_CMD[@]}"
 
-        # On an exact cache hit, the restored third_party tree already contains every ExternalProject's patched
-        # sources, per-step stamps and installed libs. But `cmake -B` above just regenerated each step's *-info.txt
-        # and *.cmake scripts with fresh mtimes, so Ninja would consider the download/patch/build/install steps out
-        # of date and rerun them. Re-running a non-idempotent PATCH_COMMAND (e.g. the AWS SDK 'patch -p1') against
-        # already-patched sources fails the build. Touch every restored stamp so it is newer than the regenerated
-        # scripts; Ninja then treats the cached third-party work as up to date and skips it.
-        if [ "${{ steps.deps-cache-restore.outputs.cache-hit }}" = "true" ]; then
-          stamp_root="${GITHUB_WORKSPACE}/${{ inputs.build-dir }}/third_party/src"
-          if [[ -d "${stamp_root}" ]]; then
-            find "${stamp_root}" -type f -path '*-stamp/*' -exec touch {} +
-            echo "Refreshed ExternalProject stamp mtimes so Ninja reuses the cached third-party build."
-          fi
-        fi
-
     - name: Build
       shell: bash
       run: |
@@ -248,6 +241,8 @@ runs:
         path: |
           ${{ inputs.build-dir }}/third_party
           ${{ inputs.build-dir }}/_deps
+          ${{ inputs.build-dir }}/.ninja_log
+          ${{ inputs.build-dir }}/CMakeFiles/*_project-complete
         key: ${{ steps.deps-cache-key.outputs.key }}
 
     - name: Clear cache on build failure (deps)

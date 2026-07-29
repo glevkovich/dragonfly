@@ -118,7 +118,11 @@ runs:
           echo "::error title=deps-cache::hashFiles() matched no files - refusing to cache under a degenerate key. Check the file list in this step."
           exit 1
         fi
-        echo "key=dfly-deps-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-${{ inputs.sanitizers }}-${{ inputs.cxx-flags }}-${{ inputs.with-aws }}-${HASH}" >> "${GITHUB_OUTPUT}"
+        # v2 adds a manifest to every dependency cache. Keeping it in the key prevents restoring
+        # pre-manifest archives, which cannot be validated safely. Update cache-reaper.yml's v2
+        # selectors when changing this version, so it removes superseded cache formats.
+        DEPS_CACHE_FORMAT_VERSION="v2"
+        echo "key=dfly-deps-${DEPS_CACHE_FORMAT_VERSION}-${{ inputs.cache-key-suffix }}-${{ runner.os }}-${{ runner.arch }}-${{ inputs.build-type }}-${{ inputs.cxx-compiler }}-${{ inputs.sanitizers }}-${{ inputs.cxx-flags }}-${{ inputs.with-aws }}-${HASH}" >> "${GITHUB_OUTPUT}"
 
     - name: Restore cache (deps)
       # - actions/cache/restore only downloads a cache; unlike the combined cache action, it never saves automatically.
@@ -140,18 +144,59 @@ runs:
           ${{ inputs.build-dir }}/third_party
           ${{ inputs.build-dir }}/_deps
           ${{ inputs.build-dir }}/.ninja_log
+          ${{ inputs.build-dir }}/.deps-cache-manifest
           ${{ inputs.build-dir }}/CMakeFiles/*_project-complete
         key: ${{ steps.deps-cache-key.outputs.key }}
+
+    - name: Validate restored cache (deps)
+      # A cache archive can restore successfully yet contain an incomplete or inconsistent dependency tree.
+      # Validate before calling CMake/Ninja. On failure discard only this job's restored paths and trigger a cold build.
+      if: inputs.enable-deps-cache == 'true' && steps.deps-cache-restore.outputs.cache-hit == 'true'
+      id: deps-cache-validate
+      shell: bash
+      run: |
+        build_dir="${GITHUB_WORKSPACE}/${{ inputs.build-dir }}"
+        pushd "${build_dir}" >/dev/null
+        shopt -s nullglob
+        cache_paths=(third_party _deps .ninja_log CMakeFiles/*_project-complete)
+        if ! python3 "${GITHUB_WORKSPACE}/tools/deps_cache_manifest.py" validate \
+          --root "${build_dir}" --manifest "${build_dir}/.deps-cache-manifest" "${cache_paths[@]}"; then
+          echo "::warning title=deps-cache::Invalid restored dependency cache; discarding local restore and rebuilding dependencies"
+          echo "Discarding restored paths for cache key: ${{ steps.deps-cache-key.outputs.key }}"
+          rm -rf third_party _deps .ninja_log .deps-cache-manifest CMakeFiles/*_project-complete
+          echo "deps_cache_is_valid=false" >> "${GITHUB_OUTPUT}"
+        else
+          echo "deps_cache_is_valid=true" >> "${GITHUB_OUTPUT}"
+        fi
+        popd >/dev/null
+
+    - name: Clear invalid restored cache (deps)
+      # Delete only this key on this ref. A read-only token on an untrusted PR may reject deletion;
+      # that is non-fatal because validation has already removed the local restore for a cold build.
+      if: inputs.enable-deps-cache == 'true' && steps.deps-cache-validate.outputs.deps_cache_is_valid == 'false'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        cache_key="${{ steps.deps-cache-key.outputs.key }}"
+        echo "Removing invalid remote dependency cache: ${cache_key} (ref: ${{ github.ref }})"
+        if ! command -v gh >/dev/null 2>&1; then
+          echo "::warning title=deps-cache::'gh' CLI not found; invalid remote cache remains until reaped"
+        elif ! gh cache delete "${cache_key}" --repo "${{ github.repository }}" --ref "${{ github.ref }}"; then
+          echo "::warning title=deps-cache::Could not delete invalid remote cache; it may require 'actions: write' permission"
+        fi
 
     - name: Report cache status (deps)
       # - Only exact cache keys are used (no restore-keys), so a hit means the config matches the saved artifacts.
       if: always() && inputs.enable-deps-cache == 'true'
       shell: bash
       run: |
-        if [ "${{ steps.deps-cache-restore.outputs.cache-hit }}" = "true" ]; then
-          STATUS="FULL HIT (exact key match) - third_party/_deps and Ninja build log restored"
-        else
+        if [ "${{ steps.deps-cache-restore.outputs.cache-hit }}" != "true" ]; then
           STATUS="MISS - no matching cache found, full cold third-party build expected"
+        elif [ "${{ steps.deps-cache-validate.outputs.deps_cache_is_valid }}" = "true" ]; then
+          STATUS="VERIFIED HIT (exact key match) - manifest, third_party/_deps, and Ninja build log restored"
+        else
+          STATUS="INVALID HIT - restored cache failed manifest validation; rebuilding dependencies locally"
         fi
         echo "Third-party deps cache: ${STATUS}"
         echo "  primary key: ${{ steps.deps-cache-key.outputs.key }}"
@@ -230,18 +275,33 @@ runs:
           ccache -s || true
         fi
 
+    - name: Generate cache manifest (deps)
+      # actions/cache/save can only archive existing paths. Generate the manifest after the cold build,
+      # before the external save action archives the dependency tree and its manifest together.
+      if: success() && inputs.enable-deps-cache == 'true' && (steps.deps-cache-restore.outputs.cache-hit != 'true' || steps.deps-cache-validate.outputs.deps_cache_is_valid == 'false')
+      shell: bash
+      run: |
+        build_dir="${GITHUB_WORKSPACE}/${{ inputs.build-dir }}"
+        pushd "${build_dir}" >/dev/null
+        shopt -s nullglob
+        cache_paths=(third_party _deps .ninja_log CMakeFiles/*_project-complete)
+        python3 "${GITHUB_WORKSPACE}/tools/deps_cache_manifest.py" generate \
+          --root "${build_dir}" --manifest "${build_dir}/.deps-cache-manifest" "${cache_paths[@]}"
+        popd >/dev/null
+
     - name: Save cache (deps)
       # - Save only after configuration and build succeed. Later test failures must not discard a valid deps cache.
       # - Never save a failed or cancelled build: it may contain incomplete artifacts.
-      # - Do not save when this step already restored the requested cache. There is nothing new to upload, and saving
-      #   it again would create an unnecessary copy for this run's branch or pull request.
-      if: success() && inputs.enable-deps-cache == 'true' && steps.deps-cache-restore.outputs.cache-hit != 'true'
+      # - Do not save after a verified cache hit. There is nothing new to upload, and saving it again would create an
+      #   unnecessary copy for this run's branch or pull request. An invalid hit is rebuilt and replaces its cache.
+      if: success() && inputs.enable-deps-cache == 'true' && (steps.deps-cache-restore.outputs.cache-hit != 'true' || steps.deps-cache-validate.outputs.deps_cache_is_valid == 'false')
       uses: actions/cache/save@v5
       with:
         path: |
           ${{ inputs.build-dir }}/third_party
           ${{ inputs.build-dir }}/_deps
           ${{ inputs.build-dir }}/.ninja_log
+          ${{ inputs.build-dir }}/.deps-cache-manifest
           ${{ inputs.build-dir }}/CMakeFiles/*_project-complete
         key: ${{ steps.deps-cache-key.outputs.key }}
 

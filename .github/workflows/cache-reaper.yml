@@ -64,14 +64,26 @@ jobs:
             fi
             echo "Deleted $before_count cache(s) for $PR_REF"
           else
-            # - Keep the newest cache for each ref and configuration; delete older duplicates.
+            # - Drop dependency-cache formats older than v2: v2 archives contain the required manifest.
+            # - Keep the newest cache for each ref and v2 configuration; delete older duplicates.
             # - ccache keys add a timestamp on every save, so remove that timestamp before grouping.
             # - Dependency keys end in a content hash; remove it to group obsolete definitions by configuration.
-            echo "Scheduled dedup - keeping newest per (ref, config), deleting older copies"
+            echo "Scheduled cleanup - removing pre-v2 dependency caches and keeping newest per (ref, config)"
             stale=$(gh cache list --limit 1000 --json id,key,ref,createdAt \
-              --jq '[ .[] | select(.key|test("^ccache-dfly-ccache-|^dfly-deps-")) ]
-                    | group_by(.ref + "|" + (.key | sub("-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z$|-[0-9a-f]{64}$";"")))
-                    | map(sort_by(.createdAt) | .[:-1]) | flatten
+              --jq '(
+                        [ .[] | select(
+                          (.key | test("^dfly-deps-"))
+                          and ((.key | test("^dfly-deps-v2-")) | not)
+                        ) ]
+                        + (
+                          [ .[] | select(.key | test("^ccache-dfly-ccache-|^dfly-deps-v2-")) ]
+                          | group_by(
+                              .ref + "|"
+                              + (.key | sub("-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z$|-[0-9a-f]{64}$"; ""))
+                            )
+                          | map(sort_by(.createdAt) | .[:-1]) | flatten
+                        )
+                      )
                     | .[] | "\(.id)\t\(.ref)\t\(.key)"')
             if [ -z "$stale" ]; then
               echo "No stale duplicate caches."

@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  pre-commit:
+  pre-build-checks:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -37,6 +37,9 @@ jobs:
             --to-ref ${{ github.event.pull_request.head.sha }}
       - name: Check fuzz command coverage
         run: python3 fuzz/check_fuzz_coverage.py
+      - name: Test dependency-cache manifest
+        run: bash tools/test_deps_cache_manifest.sh
+
   build:
     permissions:
       contents: read

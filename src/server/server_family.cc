@@ -2529,6 +2529,12 @@ Metrics ServerFamily::GetMetrics(Namespace* ns, const MetricsCollectOpts& opts) 
   for (const Metrics& partial : partials)
     result.Merge(partial);
 
+  result.conn_read_buf_capacity_by_proactor.reserve(partials.size());
+  for (size_t index = 0; index < partials.size(); ++index) {
+    result.conn_read_buf_capacity_by_proactor.emplace_back(
+        index, partials[index].facade_stats.conn_stats.read_buf_capacity);
+  }
+
 #ifdef WITH_SEARCH
   // HNSW indices live in a single global registry shared across shards, so their
   // footprint must be added once — not per-shard. Track it in both the search_used

@@ -332,6 +332,9 @@ class Connection : public util::Connection {
 
   bool IsSending() const;
 
+  // Reclaims capacity for receive-idle connections when the V2 fiber is safely parked.
+  void MaybeShrinkIoBufOnReceiveIdle();
+
   void Notify() {
     io_event_.notify();
   }
@@ -386,6 +389,12 @@ class Connection : public util::Connection {
   void ReadPendingInput();
 
   void CheckIoBufCapacity(bool reached_capacity, base::IoBuf* buf);
+  void MaybeShrinkIoBufOnLowUsage();
+  bool CanConsiderIoBufShrink(time_t now) const;
+  bool ShouldShrinkIoBuf() const;
+  bool ShrinkIoBufTo(size_t target_capacity, std::string_view reason);
+  void RecordReadData();
+  void RecordIoBufGrowth(size_t previous_capacity);
 
   // Main loop reading client messages and passing requests to dispatch queue.
   std::variant<std::error_code, ParserStatus> IoLoopV2();
@@ -731,6 +740,9 @@ class Connection : public util::Connection {
   ServiceInterface* service_;
 
   time_t creation_time_, last_interaction_;
+  time_t last_read_time_;
+  time_t next_iobuf_resize_time_;
+  size_t io_buf_high_watermark_ = 0;
   std::string name_;
 
   std::string lib_name_;

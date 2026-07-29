@@ -121,6 +121,10 @@ struct Metrics {
 
   absl::flat_hash_map<std::string, uint64_t> connections_lib_name_ver_map;
 
+  // Current input-buffer capacity keyed by proactor ID, populated after the thread-local
+  // snapshots are collected and kept separate from the server-wide aggregate.
+  std::vector<std::pair<unsigned, size_t>> conn_read_buf_capacity_by_proactor;
+
   struct ReplicaInfo {
     ReplicaSummary summary;
 

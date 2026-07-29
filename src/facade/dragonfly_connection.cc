@@ -106,8 +106,15 @@ ABSL_FLAG(uint64_t, max_bulk_len, 2u << 30,
           "Maximum bulk length that is "
           "allowed to be accepted when parsing RESP protocol");
 
-ABSL_FLAG(strings::MemoryBytesFlag, max_client_iobuf_len, 1u << 16,
+ABSL_FLAG(strings::MemoryBytesFlag, max_client_iobuf_len, 1u << 15,
           "Maximum io buffer length that is used to read client requests.");
+
+ABSL_FLAG(bool, enable_iobuf_shrink, true,
+          "Enable gradual shrinking of underused client input buffers.");
+ABSL_FLAG(uint32_t, iobuf_shrink_min_idle_sec, 30,
+          "Minimum receive-idle time before a client input buffer may shrink.");
+ABSL_FLAG(uint32_t, iobuf_shrink_interval_sec, 30,
+          "Minimum time between client input-buffer resize operations.");
 
 ABSL_FLAG(bool, migrate_connections, true,
           "When enabled, Dragonfly will try to migrate connections to the target thread on which "
@@ -867,6 +874,8 @@ Connection::Connection(Protocol protocol, util::HttpListenerBase* http_listener,
 
   creation_time_ = time(nullptr);
   last_interaction_ = creation_time_;
+  last_read_time_ = creation_time_;
+  next_iobuf_resize_time_ = creation_time_;
   id_ = NextClientId();
 
   migration_enabled_ = GetFlag(FLAGS_migrate_connections);
@@ -1336,7 +1345,9 @@ io::Result<bool> Connection::CheckForHttpProto() {
     auto buf = io_buf_.AppendBuffer();
     DCHECK(!buf.empty());
 
+    const uint64_t io_buf_generation = io_buf_.generation();
     ::io::Result<size_t> recv_sz = peer->Recv(buf);
+    DCHECK_EQ(io_buf_.generation(), io_buf_generation);
     if (!recv_sz) {
       return make_unexpected(recv_sz.error());
     }
@@ -1346,6 +1357,7 @@ io::Result<bool> Connection::CheckForHttpProto() {
     }
 
     io_buf_.CommitWrite(*recv_sz);
+    RecordReadData();
     string_view ib = io::View(io_buf_.InputBuffer());
     if (ib.size() >= 2 && ib[0] == 22 && ib[1] == 3) {
       // We matched the TLS handshake raw data, which means "peer" is a TCP socket.
@@ -1364,10 +1376,12 @@ io::Result<bool> Connection::CheckForHttpProto() {
       return MatchHttp11Line(ib);
     }
     last_len = io_buf_.InputLen();
+    const size_t previous_capacity = io_buf_.Capacity();
     {
       ReadBufTracker tracker(io_buf_, id_);
       io_buf_.EnsureCapacity(128);
     }
+    RecordIoBufGrowth(previous_capacity);
   } while (last_len < 1024);
 
   return false;
@@ -1626,8 +1640,10 @@ Connection::ParserStatus Connection::ParseRedis(base::IoBuf& io_buf, uint32_t ma
       GetLocalConnStats().num_read_yields++;
 
       fiber_park_spot_ = FiberParkSpot::kParseYield;
+      const uint64_t io_buf_generation = io_buf.generation();
       ThisFiber::Yield();
       fiber_park_spot_ = FiberParkSpot::kNone;
+      DCHECK_EQ(io_buf.generation(), io_buf_generation);
 
       // Note:
       // - read_buffer stays valid across this yield since proactor only calls ReadPendingInput ->
@@ -1800,7 +1816,9 @@ io::Result<size_t> Connection::HandleRecvSocket() {
 
   io::MutableBytes append_buf = io_buf_.AppendBuffer();
   DCHECK(!append_buf.empty());
+  const uint64_t io_buf_generation = io_buf_.generation();
   ::io::Result<size_t> recv_sz = socket_->Recv(append_buf);
+  DCHECK_EQ(io_buf_.generation(), io_buf_generation);
   last_interaction_ = time(nullptr);
 
   // In case the socket was closed orderly, we get 0 bytes read.
@@ -1809,6 +1827,7 @@ io::Result<size_t> Connection::HandleRecvSocket() {
     DVLOG(2) << CONN_ID << "Received " << commit_sz << " bytes from socket";
 
     io_buf_.CommitWrite(commit_sz);
+    RecordReadData();
 
     conn_stats.io_read_bytes += commit_sz;
     local_stats_.net_bytes_in += commit_sz;
@@ -1855,6 +1874,10 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoop() {
 
     if (parse_status == NEED_MORE) {
       parse_status = OK;
+      MaybeShrinkIoBufOnLowUsage();
+
+      // Shrinking can compact unread input and free append space.
+      reached_capacity = io_buf_.AppendLen() == 0;
 
       size_t capacity = io_buf_.Capacity();
       if (capacity < max_iobfuf_len) {
@@ -1870,14 +1893,16 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoop() {
         if (parser_hint > capacity) {
           ReadBufTracker tracker(io_buf_, id_);
           io_buf_.Reserve(std::min(max_iobfuf_len, parser_hint));
+          RecordIoBufGrowth(capacity);
         }
 
         // If we got a partial request because iobuf was full, grow it up to
         // a reasonable limit to save on Recv() calls.
-        if (reached_capacity && capacity < max_iobfuf_len / 2) {
+        if (reached_capacity && capacity < max_iobfuf_len) {
           // Last io used most of the io_buf to the end.
           ReadBufTracker tracker(io_buf_, id_);
-          io_buf_.Reserve(capacity * 2);  // Valid growth range.
+          io_buf_.Reserve(std::min(max_iobfuf_len, capacity * 2));
+          RecordIoBufGrowth(capacity);
         }
 
         if (io_buf_.AppendLen() == 0U) {
@@ -3384,9 +3409,10 @@ void Connection::UpdateFromFlags() {
 }
 
 std::vector<std::string> Connection::GetMutableFlagNames() {
-  return base::GetFlagNames(FLAGS_pipeline_queue_limit, FLAGS_pipeline_buffer_limit,
-                            FLAGS_max_busy_read_usec, FLAGS_always_flush_pipeline,
-                            FLAGS_pipeline_squash_limit, FLAGS_pipeline_wait_batch_usec);
+  return base::GetFlagNames(
+      FLAGS_pipeline_queue_limit, FLAGS_pipeline_buffer_limit, FLAGS_max_busy_read_usec,
+      FLAGS_always_flush_pipeline, FLAGS_pipeline_squash_limit, FLAGS_pipeline_wait_batch_usec,
+      FLAGS_enable_iobuf_shrink, FLAGS_iobuf_shrink_min_idle_sec, FLAGS_iobuf_shrink_interval_sec);
 }
 
 void Connection::GetRequestSizeHistogramThreadLocal(std::string* hist) {
@@ -3498,6 +3524,7 @@ void Connection::ProcessRecvNotification(const util::FiberSocketBase::RecvNotifi
       io_buf_.WriteAndCommit(buf.data(), buf.size());
     }
     last_interaction_ = time(nullptr);
+    RecordReadData();
 
     DCHECK(tl_facade_stats);
     auto& conn_stats = tl_facade_stats->conn_stats;
@@ -3555,6 +3582,7 @@ void Connection::ReadPendingInput() {
 
     last_interaction_ = time(nullptr);
     io_buf_.CommitWrite(commit_sz);
+    RecordReadData();
     buf = io_buf_.AppendBuffer();
   }
 }
@@ -3576,14 +3604,16 @@ void Connection::CheckIoBufCapacity(bool reached_capacity, base::IoBuf* io_buf) 
     if (parser_hint > capacity) {
       ReadBufTracker tracker(*io_buf, id_);
       io_buf->Reserve(std::min(max_io_buf_len, parser_hint));
+      RecordIoBufGrowth(capacity);
     }
 
     // If we got a partial request because iobuf was full, grow it up to
     // a reasonable limit to save on Recv() calls.
-    if (reached_capacity && capacity < max_io_buf_len / 2) {
+    if (reached_capacity && capacity < max_io_buf_len) {
       // Last io used most of the io_buf to the end.
       ReadBufTracker tracker(*io_buf, id_);
-      io_buf->Reserve(capacity * 2);  // Valid growth range.
+      io_buf->Reserve(std::min(max_io_buf_len, capacity * 2));
+      RecordIoBufGrowth(capacity);
     }
 
     if (io_buf->AppendLen() == 0U) {
@@ -3593,6 +3623,84 @@ void Connection::CheckIoBufCapacity(bool reached_capacity, base::IoBuf* io_buf) 
                                << ", consider to increase max_client_iobuf_len flag";
     }
   }
+}
+
+void Connection::RecordReadData() {
+  last_read_time_ = time(nullptr);
+  io_buf_high_watermark_ = std::max(io_buf_high_watermark_, io_buf_.InputLen());
+}
+
+void Connection::RecordIoBufGrowth(size_t previous_capacity) {
+  if (io_buf_.Capacity() == previous_capacity)
+    return;
+
+  // A larger buffer starts a new usage window at its current occupancy.
+  io_buf_high_watermark_ = io_buf_.InputLen();
+  next_iobuf_resize_time_ = time(nullptr) + GetFlag(FLAGS_iobuf_shrink_interval_sec);
+}
+
+bool Connection::CanConsiderIoBufShrink(time_t now) const {
+  return (now >= next_iobuf_resize_time_) && (io_buf_.Capacity() > kMinReadSize) &&
+         GetFlag(FLAGS_enable_iobuf_shrink);
+}
+
+bool Connection::ShouldShrinkIoBuf() const {
+  if (!ioloop_v2_)
+    return false;
+
+  return (fiber_park_spot_ == FiberParkSpot::kIdleAwait) && (io_buf_.InputLen() == 0) &&
+         !pending_input_ && (recv_buf_.res_len == 0);
+}
+
+bool Connection::ShrinkIoBufTo(size_t target_capacity, string_view reason) {
+  if (!CanConsiderIoBufShrink(time(nullptr)) || (target_capacity >= io_buf_.Capacity())) {
+    return false;
+  }
+
+  const size_t previous_capacity = io_buf_.Capacity();
+  {
+    ReadBufTracker tracker(io_buf_, id_);
+    if (!io_buf_.ShrinkTo(target_capacity))
+      return false;
+  }
+
+  const size_t reclaimed = previous_capacity - io_buf_.Capacity();
+  auto& conn_stats = GetLocalConnStats();
+  ++conn_stats.iobuf_shrink_events;
+  conn_stats.iobuf_shrink_bytes += reclaimed;
+  io_buf_high_watermark_ = io_buf_.InputLen();
+  next_iobuf_resize_time_ = time(nullptr) + GetFlag(FLAGS_iobuf_shrink_interval_sec);
+  DVLOG(2) << CONN_ID << "Shrank io_buf from " << previous_capacity << " to " << io_buf_.Capacity()
+           << ", unread=" << io_buf_.InputLen() << ", reason=" << reason;
+  return true;
+}
+
+void Connection::MaybeShrinkIoBufOnLowUsage() {
+  const time_t now = time(nullptr);
+  if (!CanConsiderIoBufShrink(now)) {
+    return;
+  }
+
+  if (io_buf_high_watermark_ < (io_buf_.Capacity() / 2)) {
+    const size_t target_capacity =
+        std::max({io_buf_.Capacity() / 2, absl::bit_ceil(io_buf_.InputLen()), kMinReadSize});
+    ShrinkIoBufTo(target_capacity, "low_usage");
+    return;
+  }
+
+  io_buf_high_watermark_ = io_buf_.InputLen();
+  next_iobuf_resize_time_ = now + GetFlag(FLAGS_iobuf_shrink_interval_sec);
+}
+
+void Connection::MaybeShrinkIoBufOnReceiveIdle() {
+  const time_t now = time(nullptr);
+  if (!CanConsiderIoBufShrink(now) ||
+      ((now - last_read_time_) < GetFlag(FLAGS_iobuf_shrink_min_idle_sec)) ||
+      !ShouldShrinkIoBuf()) {
+    return;
+  }
+
+  ShrinkIoBufTo(std::max(io_buf_.Capacity() / 2, kMinReadSize), "receive_idle");
 }
 
 void Connection::MaybeEnableRecvMultishot() {
@@ -3853,6 +3961,8 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoopV2() {
 
     if (parse_status == NEED_MORE) {
       parse_status = OK;
+      MaybeShrinkIoBufOnLowUsage();
+      reached_capacity = io_buf_.AppendLen() == 0;
       CheckIoBufCapacity(reached_capacity, &io_buf_);
     }
   } while (peer->IsOpen());

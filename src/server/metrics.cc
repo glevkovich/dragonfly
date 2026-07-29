@@ -227,6 +227,13 @@ void Metrics::Print(uint64_t uptime, const CommandRegistry* registry, DflyCmd* d
       "Approximate direct memory used by active non-replication-flow connections, excluding "
       "separately tracked read buffers and queues.",
       conn_stats.connection_memory_bytes, MetricType::GAUGE, &resp->body());
+  AppendMetricHeader("client_read_buffer_bytes_by_proactor",
+                     "Current client input-buffer capacity by proactor", MetricType::GAUGE,
+                     &resp->body());
+  for (const auto& [proactor_id, capacity] : m.conn_read_buf_capacity_by_proactor) {
+    AppendMetricValue("client_read_buffer_bytes_by_proactor", capacity, {"proactor"},
+                      {StrCat(proactor_id)}, &resp->body());
+  }
   AppendMetricWithoutLabels("fibers_count", "", m.worker_fiber_count, MetricType::GAUGE,
                             &resp->body());
   AppendMetricWithoutLabels("blocked_tasks", "", m.blocked_tasks, MetricType::GAUGE, &resp->body());
@@ -315,6 +322,10 @@ void Metrics::Print(uint64_t uptime, const CommandRegistry* registry, DflyCmd* d
                             &resp->body());
   AppendMetricWithoutLabels("net_read_yields_total", "", conn_stats.num_read_yields,
                             MetricType::COUNTER, &resp->body());
+  AppendMetricWithoutLabels("client_read_buffer_shrink_total", "", conn_stats.iobuf_shrink_events,
+                            MetricType::COUNTER, &resp->body());
+  AppendMetricWithoutLabels("client_read_buffer_shrink_bytes_total", "",
+                            conn_stats.iobuf_shrink_bytes, MetricType::COUNTER, &resp->body());
   AppendMetricWithoutLabels("proactor_reads_total", "V2 OnRecv reads that actually drained bytes",
                             conn_stats.proactor_reads, MetricType::COUNTER, &resp->body());
   AppendMetricWithoutLabels("proactor_parse_total",
@@ -729,6 +740,7 @@ void Metrics::Merge(const Metrics& src) {
                              sizeof(ReplicationMemoryStats) + sizeof(InterpreterManager::Stats) +
                              sizeof(std::vector<std::pair<uint64_t, uint64_t>>) +
                              sizeof(absl::flat_hash_map<std::string, uint64_t>) +
+                             sizeof(std::vector<std::pair<unsigned, size_t>>) +
                              sizeof(std::optional<Metrics::ReplicaInfo>) + sizeof(LoadingStats) +
                              sizeof(absl::flat_hash_map<std::string, hdr_histogram*>) +
                              sizeof(InternedStringStats) + sizeof(acl::UserRegistry::AclStats) +
@@ -799,6 +811,7 @@ void Metrics::InitFromThread(Namespace* ns, const CommandRegistry* registry,
                              sizeof(ReplicationMemoryStats) + sizeof(InterpreterManager::Stats) +
                              sizeof(std::vector<std::pair<uint64_t, uint64_t>>) +
                              sizeof(absl::flat_hash_map<std::string, uint64_t>) +
+                             sizeof(std::vector<std::pair<unsigned, size_t>>) +
                              sizeof(std::optional<Metrics::ReplicaInfo>) + sizeof(LoadingStats) +
                              sizeof(absl::flat_hash_map<std::string, hdr_histogram*>) +
                              sizeof(InternedStringStats) + sizeof(acl::UserRegistry::AclStats) +

@@ -32,6 +32,7 @@ ABSL_FLAG(uint32_t, timeout, 0,
           "Close the connection after it is idle for N seconds (0 to disable)");
 ABSL_FLAG(uint32_t, send_timeout, 0,
           "Close the connection after it is stuck on send for N seconds (0 to disable)");
+ABSL_DECLARE_FLAG(bool, enable_iobuf_shrink);
 
 ABSL_FLAG(double, rss_oom_deny_ratio, 1.25,
           "When the ratio between maxmemory and RSS memory exceeds this value, commands marked as "
@@ -311,7 +312,7 @@ void ServerState::ConnectionsWatcherFb(util::ListenerInterface* main) {
     const uint32_t send_timeout = absl::GetFlag(FLAGS_send_timeout);
     VLOG(1) << "ConnectionsWatcherFb: timeout=" << timeout << ", send_timeout=" << send_timeout;
 
-    if (timeout == 0 && send_timeout == 0) {
+    if (timeout == 0 && send_timeout == 0 && !absl::GetFlag(FLAGS_enable_iobuf_shrink)) {
       continue;
     }
 
@@ -338,6 +339,8 @@ void ServerState::ConnectionsWatcherFb(util::ListenerInterface* main) {
                        dfly_conn->idle_time() > timeout;
       bool stuck_sending = send_timeout != 0 && !is_replica && dfly_conn->IsSending() &&
                            dfly_conn->GetSendWaitTimeSec() > send_timeout;
+
+      dfly_conn->MaybeShrinkIoBufOnReceiveIdle();
 
       VLOG(2) << "Connection check: " << dfly_conn->GetClientInfo()
               << ", phase=" << static_cast<int>(phase) << ", idle_time=" << dfly_conn->idle_time()

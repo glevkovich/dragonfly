@@ -2144,6 +2144,146 @@ async def test_pipeline_cache_size(df_server: DflyInstance):
     assert info["dispatch_queue_bytes"] == 0
 
 
+@dfly_args(
+    {
+        "proactor_threads": 1,
+        "enable_resp_io_loop_v2": "true",
+        "max_client_iobuf_len": 4096,
+        "iobuf_shrink_min_idle_sec": 1,
+        "iobuf_shrink_interval_sec": 1,
+    }
+)
+async def test_iobuf_shrinks_when_receive_idle(df_server: DflyInstance):
+    observer = df_server.client()
+    client = df_server.client()
+    await observer.ping()
+
+    async def proactor_read_buffer_bytes():
+        metrics = await df_server.metrics()
+        samples = metrics["dragonfly_client_read_buffer_bytes_by_proactor"].samples
+        return next(sample.value for sample in samples if sample.labels["proactor"] == "0")
+
+    baseline = int((await observer.info("clients"))["client_read_buffer_bytes"])
+    await client.set("iobuf-shrink", "x" * 2048)
+
+    peak = int((await observer.info("clients"))["client_read_buffer_bytes"])
+    proactor_peak = await proactor_read_buffer_bytes()
+    assert peak > baseline
+
+    @assert_eventually(timeout=5)
+    async def wait_for_reclamation():
+        current = int((await observer.info("clients"))["client_read_buffer_bytes"])
+        assert current < peak
+        assert await proactor_read_buffer_bytes() < proactor_peak
+
+    await wait_for_reclamation()
+    await client.aclose()
+    await observer.aclose()
+
+
+@dfly_args(
+    {
+        "proactor_threads": 1,
+        "enable_resp_io_loop_v2": "true",
+        "enable_iobuf_shrink": "false",
+        "max_client_iobuf_len": 4096,
+        "iobuf_shrink_min_idle_sec": 1,
+        "iobuf_shrink_interval_sec": 1,
+    }
+)
+async def test_iobuf_does_not_shrink_when_disabled(df_server: DflyInstance):
+    observer = df_server.client()
+    client = df_server.client()
+    await observer.ping()
+
+    await client.set("iobuf-shrink-disabled", "x" * 2048)
+    peak = int((await observer.info("clients"))["client_read_buffer_bytes"])
+
+    await asyncio.sleep(3)
+
+    current = int((await observer.info("clients"))["client_read_buffer_bytes"])
+    assert current == peak
+
+    await client.aclose()
+    await observer.aclose()
+
+
+@dfly_args(
+    {
+        "proactor_threads": 1,
+        "enable_resp_io_loop_v2": "false",
+        "max_client_iobuf_len": 4096,
+        "iobuf_shrink_interval_sec": 1,
+    }
+)
+async def test_iobuf_shrinks_from_v1_active_path(df_server: DflyInstance):
+    observer = df_server.client()
+    await observer.ping()
+    reader, writer = await asyncio.open_connection("127.0.0.1", df_server.port)
+
+    value = b"x" * 2048
+    writer.write(b"*3\r\n$3\r\nSET\r\n$7\r\nprefill\r\n$2048\r\n" + value + b"\r\n")
+    await writer.drain()
+    assert await reader.readuntil(b"\r\n") == b"+OK\r\n"
+
+    peak = int((await observer.info("clients"))["client_read_buffer_bytes"])
+    await asyncio.sleep(2)
+
+    partial_value = b"y" * 100
+    writer.write(b"*3\r\n$3\r\nSET\r\n$7\r\npartial\r\n$1024\r\n" + partial_value)
+    await writer.drain()
+    await asyncio.sleep(2)
+
+    writer.write(b"y")
+    await writer.drain()
+
+    @assert_eventually(timeout=5)
+    async def wait_for_reclamation():
+        current = int((await observer.info("clients"))["client_read_buffer_bytes"])
+        assert current < peak
+
+    await wait_for_reclamation()
+
+    writer.write(b"y" * (1024 - len(partial_value) - 1) + b"\r\n")
+    await writer.drain()
+    assert await reader.readuntil(b"\r\n") == b"+OK\r\n"
+
+    writer.close()
+    await writer.wait_closed()
+    await observer.aclose()
+
+
+@dfly_args(
+    {
+        "proactor_threads": 1,
+        "enable_resp_io_loop_v2": "true",
+        "max_client_iobuf_len": 4096,
+        "iobuf_shrink_min_idle_sec": 1,
+        "iobuf_shrink_interval_sec": 3,
+    }
+)
+async def test_iobuf_shrink_respects_cooldown(df_server: DflyInstance):
+    observer = df_server.client()
+    client = df_server.client()
+    await observer.ping()
+
+    await client.set("iobuf-shrink-cooldown", "x" * 2048)
+    peak = int((await observer.info("clients"))["client_read_buffer_bytes"])
+
+    @assert_eventually(timeout=7)
+    async def wait_for_first_shrink():
+        current = int((await observer.info("clients"))["client_read_buffer_bytes"])
+        assert current < peak
+
+    await wait_for_first_shrink()
+    after_first_shrink = int((await observer.info("clients"))["client_read_buffer_bytes"])
+    await asyncio.sleep(1)
+    assert int((await observer.info("clients"))["client_read_buffer_bytes"]) == after_first_shrink
+
+    await client.aclose()
+    await observer.aclose()
+
+
 @dfly_multi_test_args(
     {
         "proactor_threads": 4,

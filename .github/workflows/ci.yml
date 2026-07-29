@@ -14,7 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  pre-build-checks:
+  # Keep this ID stable because repository branch protection may require its status check.
+  pre-commit:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -119,6 +120,10 @@ jobs:
           echo "disk space is:"
           df -h
           echo "-----------------------------"
+
+      - name: Test dependency-cache manifest
+        if: github.event_name == 'push' && matrix.container == 'ubuntu-dev:24' && matrix.build-type == 'Debug' && matrix.compiler.cxx == 'g++' && matrix.sanitizers == 'NoSanitizers'
+        run: bash tools/test_deps_cache_manifest.sh
 
       - name: Build Dragonfly
         uses: ./.github/actions/builder

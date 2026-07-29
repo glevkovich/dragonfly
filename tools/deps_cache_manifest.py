@@ -9,7 +9,19 @@ Usage:
 The CI builder saves this manifest with its dependency cache. On an exact cache hit it
 regenerates the manifest before CMake/Ninja; a mismatch means the restored tree is
 discarded locally and that job cold-builds dependencies instead of failing repeatedly.
+Timestamps are intentionally excluded because cache archive tools do not consistently
+preserve nanosecond precision.
+Hardlink topology is intentionally not recorded; cache correctness depends on each path's
+contents rather than its inode identity.
+
+Exit status:
+    0: manifest generated or restored cache matches.
+    1: restored cache or manifest differs from the generated manifest.
+    2: invalid invocation or configuration.
+    3: unexpected filesystem or runtime error.
 """
+
+from __future__ import annotations
 
 import argparse
 import concurrent.futures
@@ -19,32 +31,47 @@ import os
 import stat
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 
-FORMAT = "deps-cache-manifest-v1"
+# Manifest body schema, separate from the GitHub Actions cache layout version in builder/action.yml.
+FORMAT = "deps-cache-manifest-v2"
 
 
-def fail(message: str) -> None:
+def fail(message: str) -> NoReturn:
     print(f"deps-cache-manifest: {message}", file=sys.stderr)
     raise SystemExit(2)
 
 
-def requested_path(root: Path, requested: str) -> Path:
+def mismatch(message: str) -> NoReturn:
+    print(f"deps-cache-manifest: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def requested_path(root: Path, requested: str) -> Path | None:
     path = Path(requested)
     if path.is_absolute() or ".." in path.parts:
         fail(f"cached path must be a relative path below the root: {requested}")
     full_path = root / path
     if not os.path.lexists(full_path):
-        fail(f"cached path is missing: {requested}")
+        return None
+    try:
+        full_path.resolve().relative_to(root)
+    except ValueError:
+        fail(f"cached path resolves outside the root: {requested}")
     return full_path
 
 
 def walk(path: Path):
-    yield path
-    if path.is_dir() and not path.is_symlink():
-        with os.scandir(path) as entries:
-            for entry in sorted(entries, key=lambda item: os.fsencode(item.name)):
-                yield from walk(Path(entry.path))
+    stack = [(path, path.lstat())]
+    while stack:
+        current, metadata = stack.pop()
+        yield current, metadata
+        if stat.S_ISDIR(metadata.st_mode):
+            with os.scandir(current) as entries:
+                stack.extend(
+                    (Path(entry.path), entry.stat(follow_symlinks=False)) for entry in entries
+                )
 
 
 def relative_path(root: Path, path: Path) -> str:
@@ -59,12 +86,12 @@ def hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def record_path(root: Path, path: Path, checksums: dict[Path, str]) -> dict[str, object]:
-    metadata = path.lstat()
+def record_path(
+    root: Path, path: Path, metadata: os.stat_result, checksums: dict[Path, str]
+) -> dict[str, object]:
     record: dict[str, object] = {
         "path": relative_path(root, path),
         "mode": stat.S_IMODE(metadata.st_mode),
-        "mtime_ns": metadata.st_mtime_ns,
     }
 
     if stat.S_ISREG(metadata.st_mode):
@@ -74,24 +101,41 @@ def record_path(root: Path, path: Path, checksums: dict[Path, str]) -> dict[str,
     elif stat.S_ISLNK(metadata.st_mode):
         record.update(type="symlink", target=os.readlink(path))
     else:
-        fail(f"unsupported filesystem type at {record['path']}")
+        mismatch(f"unsupported filesystem type at {record['path']}")
     return record
 
 
-def manifest(root: Path, requested: list[str], workers: int) -> bytes:
-    paths: list[Path] = []
+def build_manifest(root: Path, requested: list[str], workers: int) -> bytes:
+    entries: list[tuple[Path, os.stat_result]] = []
     for item in requested:
-        paths.extend(walk(requested_path(root, item)))
+        path = requested_path(root, item)
+        if path is not None:
+            entries.extend(walk(path))
 
-    paths.sort(key=lambda path: os.fsencode(relative_path(root, path)))
-    regular_files = [path for path in paths if stat.S_ISREG(path.lstat().st_mode)]
+    entries.sort(key=lambda entry: os.fsencode(relative_path(root, entry[0])))
+    metadata_by_path = dict(entries)
+    paths = list(dict.fromkeys(path for path, _ in entries))
+    regular_files = [path for path in paths if stat.S_ISREG(metadata_by_path[path].st_mode)]
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         checksums = dict(zip(regular_files, executor.map(hash_file, regular_files)))
 
-    records = [record_path(root, path, checksums) for path in paths]
-    lines = [FORMAT]
+    records = [record_path(root, path, metadata_by_path[path], checksums) for path in paths]
+    header = {"format": FORMAT, "paths": requested}
+    lines = [json.dumps(header, separators=(",", ":"), sort_keys=True)]
     lines.extend(json.dumps(record, separators=(",", ":"), sort_keys=True) for record in records)
     return ("\n".join(lines) + "\n").encode()
+
+
+def validate_header(contents: bytes, requested: list[str]) -> None:
+    try:
+        header = json.loads(contents.split(b"\n", 1)[0])
+    except json.JSONDecodeError:
+        mismatch("manifest header is not valid JSON")
+    if not isinstance(header, dict) or header.get("format") != FORMAT:
+        actual_format = header.get("format") if isinstance(header, dict) else None
+        mismatch(f"manifest format {actual_format!r} does not match expected {FORMAT!r}")
+    if header.get("paths") != requested:
+        mismatch("manifest requested paths do not match the validation invocation")
 
 
 def parse_args() -> argparse.Namespace:
@@ -113,20 +157,23 @@ def main() -> None:
     if not root.is_dir():
         fail(f"root is not a directory: {root}")
 
-    contents = manifest(root, arguments.paths, arguments.workers)
     if arguments.command == "generate":
-        arguments.manifest.write_bytes(contents)
+        arguments.manifest.write_bytes(build_manifest(root, arguments.paths, arguments.workers))
         return
 
     if not arguments.manifest.is_file():
-        fail(f"manifest is missing: {arguments.manifest}")
-    if arguments.manifest.read_bytes() != contents:
-        print(
-            f"deps-cache-manifest: restored cache does not match {arguments.manifest}",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
+        mismatch(f"manifest is missing: {arguments.manifest}")
+    saved_contents = arguments.manifest.read_bytes()
+    validate_header(saved_contents, arguments.paths)
+    if saved_contents != build_manifest(root, arguments.paths, arguments.workers):
+        mismatch(f"restored cache does not match {arguments.manifest}")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as error:
+        print(f"deps-cache-manifest: unexpected error: {error}", file=sys.stderr)
+        raise SystemExit(3)

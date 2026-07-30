@@ -149,6 +149,8 @@ runs:
       #   that Ninja built it. On a fresh (or tar-restored) tree without the log, Ninja re-runs every ExternalProject
       #   step regardless of file mtimes - and re-running the non-idempotent AWS 'patch -p1' against already-patched
       #   sources fails the build. Restoring .ninja_log makes Ninja treat the cached third_party/_deps work as done.
+      # - Manifest validation intentionally excludes mtimes; the tar round-trip regression test verifies they survive
+      #   archive restoration so Ninja can continue trusting the restored build log.
       # - CMakeFiles/*_project-complete are the final ExternalProject markers; caching them keeps the hit fully clean.
       # - Paths are workspace-relative because actions/cache runs inside the job's container, where host paths do not
       #   exist.

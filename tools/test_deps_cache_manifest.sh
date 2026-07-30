@@ -59,6 +59,11 @@ expect_accepted_after_tar_round_trip() {
   mkdir "$workspace/restored"
   tar -xf "$workspace/cache.tar" -P -C "$workspace/restored"
   cp "$case_dir/manifest" "$workspace/restored/manifest"
+  if [ "$(stat -c '%Y.%y' "$case_dir/cache/nested/file-0001")" != \
+    "$(stat -c '%Y.%y' "$workspace/restored/cache/nested/file-0001")" ]; then
+    echo "tar did not preserve mtime; Ninja will re-run patch steps" >&2
+    exit 1
+  fi
   python3 "$manifest_tool" validate --root "$workspace/restored" \
     --manifest "$workspace/restored/manifest" cache
   echo "PASS: tar round-trip"

@@ -6,6 +6,8 @@ Usage:
     python3 tools/deps_cache_manifest.py generate --root BUILD_DIR --manifest FILE PATH [...]
     python3 tools/deps_cache_manifest.py validate --root BUILD_DIR --manifest FILE PATH [...]
 
+Requires Python 3.8 or newer.
+
 The CI builder saves this manifest with its dependency cache. On an exact cache hit it
 regenerates the manifest before CMake/Ninja; a mismatch means the restored tree is
 discarded locally and that job cold-builds dependencies instead of failing repeatedly.
@@ -152,6 +154,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    if sys.version_info < (3, 8):
+        fail("Python 3.8 or newer is required")
     arguments = parse_args()
     root = arguments.root.resolve()
     if not root.is_dir():

@@ -163,13 +163,13 @@ runs:
 
     - name: Validate restored cache (deps)
       # A cache archive can restore successfully yet contain an incomplete or inconsistent dependency tree.
-      # Validate before calling CMake/Ninja. On failure discard only this job's restored paths and trigger a cold build.
+      # Validate before calling CMake/Ninja. On failure discard local paths, attempt remote deletion, and cold-build.
       if: inputs.enable-deps-cache == 'true' && steps.deps-cache-restore.outputs.cache-hit == 'true'
       id: deps-cache-validate
       shell: bash
       run: |
         manifest_path="${GITHUB_WORKSPACE}/${{ steps.deps-cache-paths.outputs.manifest_path }}"
-        pushd "${GITHUB_WORKSPACE}" >/dev/null
+        cd "${GITHUB_WORKSPACE}"
         shopt -s nullglob
         mapfile -t cache_paths <<< "${{ steps.deps-cache-paths.outputs.paths }}"
         expanded_cache_paths=()
@@ -185,7 +185,7 @@ runs:
             echo "deps_cache_is_valid=true" >> "${GITHUB_OUTPUT}"
             ;;
           1)
-            echo "::warning title=deps-cache::Invalid restored dependency cache; discarding local restore and rebuilding dependencies"
+            echo "::warning title=deps-cache::Invalid restored dependency cache; discarding local restore, attempting remote deletion, and rebuilding dependencies"
             echo "Discarding restored paths for cache key: ${{ steps.deps-cache-key.outputs.key }}"
             # The manifest cannot describe itself, so remove it separately from the shared cache-path list.
             rm -rf "${expanded_cache_paths[@]}" "${manifest_path}"
@@ -196,7 +196,6 @@ runs:
             exit "${validation_status}"
             ;;
         esac
-        popd >/dev/null
 
     - name: Clear invalid restored cache (deps)
       # Delete only this key on this ref. A read-only token on an untrusted PR may reject deletion;
@@ -233,6 +232,8 @@ runs:
           STATUS="MISS - no matching cache found, full cold third-party build expected"
         elif [ "${{ steps.deps-cache-validate.outputs.deps_cache_is_valid }}" = "true" ]; then
           STATUS="VERIFIED HIT (exact key match) - manifest, third_party/_deps, and Ninja build log restored"
+        elif [ -z "${{ steps.deps-cache-validate.outputs.deps_cache_is_valid }}" ]; then
+          STATUS="UNKNOWN - exact cache hit was not validated"
         else
           STATUS="INVALID HIT - restored cache failed manifest validation; rebuilding dependencies locally"
         fi
@@ -320,7 +321,7 @@ runs:
       shell: bash
       run: |
         manifest_path="${GITHUB_WORKSPACE}/${{ steps.deps-cache-paths.outputs.manifest_path }}"
-        pushd "${GITHUB_WORKSPACE}" >/dev/null
+        cd "${GITHUB_WORKSPACE}"
         shopt -s nullglob
         mapfile -t cache_paths <<< "${{ steps.deps-cache-paths.outputs.paths }}"
         expanded_cache_paths=()
@@ -331,13 +332,13 @@ runs:
         python3 "${GITHUB_WORKSPACE}/tools/deps_cache_manifest.py" generate \
           --root "${GITHUB_WORKSPACE}" --manifest "${manifest_path}" \
           "${expanded_cache_paths[@]}"
-        popd >/dev/null
 
     - name: Save cache (deps)
       # - Save only after configuration and build succeed. Later test failures must not discard a valid deps cache.
       # - Never save a failed or cancelled build: it may contain incomplete artifacts.
       # - Do not save after a verified cache hit. There is nothing new to upload, and saving it again would create an
-      #   unnecessary copy for this run's branch or pull request. An invalid hit is rebuilt and replaces its cache.
+      #   unnecessary copy for this run's branch or pull request. An invalid hit is rebuilt and save is attempted;
+      #   if remote deletion failed, Actions caches retain the existing key because they cannot be overwritten.
       if: success() && inputs.enable-deps-cache == 'true' && (steps.deps-cache-restore.outputs.cache-hit != 'true' || steps.deps-cache-validate.outputs.deps_cache_is_valid == 'false')
       uses: actions/cache/save@v5
       with:
@@ -348,7 +349,8 @@ runs:
 
     - name: Clear cache on build failure (deps)
       # - On failure of a cold build, clear the cache record so the next run rebuilds instead of reusing partial work.
-      # - Leave an exact hit in place: it was a valid, previously-saved cache and this run's failure is unrelated to it.
+      # - Leave an exact hit in place: valid hits are unrelated to this run's failure, and invalid hits are handled by
+      #   the Clear invalid restored cache step above.
       # - --ref limits deletion to this run's ref. Without it, a matching pull-request key could delete main's cache.
       # - Skip cleanup when key computation failed before producing a key.
       if: failure() && inputs.enable-deps-cache == 'true' && steps.deps-cache-key.outputs.key != '' && steps.deps-cache-restore.outputs.cache-hit != 'true'

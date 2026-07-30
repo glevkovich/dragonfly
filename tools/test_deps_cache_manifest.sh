@@ -19,7 +19,7 @@ cleanup() {
 trap cleanup EXIT
 
 now_ns() {
-  date +%s%N
+  python3 -c 'import time; print(time.time_ns())'
 }
 
 elapsed_ms() {
@@ -27,18 +27,20 @@ elapsed_ms() {
 }
 
 make_case() {
-  case_dir="$workspace/case"
+  local case_dir="$workspace/case"
   rm -rf "$case_dir"
   cp -a "$template" "$case_dir"
   python3 "$manifest_tool" generate --root "$case_dir" --manifest "$case_dir/manifest" cache
   python3 "$manifest_tool" validate --root "$case_dir" --manifest "$case_dir/manifest" cache
+  printf '%s\n' "$case_dir"
 }
 
 expect_failure() {
   local description="$1"
   local expected_status="$2"
   local command="$3"
-  make_case
+  local case_dir
+  case_dir=$(make_case)
   bash -c "$command" -- "$case_dir"
   local actual_status=0
   python3 "$manifest_tool" validate --root "$case_dir" --manifest "$case_dir/manifest" cache \
@@ -51,7 +53,8 @@ expect_failure() {
 }
 
 expect_accepted_after_tar_round_trip() {
-  make_case
+  local case_dir
+  case_dir=$(make_case)
   tar --posix -cf "$workspace/cache.tar" -P -C "$case_dir" cache
   mkdir "$workspace/restored"
   tar -xf "$workspace/cache.tar" -P -C "$workspace/restored"
@@ -62,7 +65,8 @@ expect_accepted_after_tar_round_trip() {
 }
 
 expect_accepted_with_missing_optional_path() {
-  make_case
+  local case_dir
+  case_dir=$(make_case)
   rm -rf "$case_dir/cache"
   python3 "$manifest_tool" generate --root "$case_dir" --manifest "$case_dir/optional-manifest" \
     cache optional-path
@@ -75,7 +79,8 @@ expect_failure_with_requested_paths() {
   local description="$1"
   local expected_status="$2"
   shift 2
-  make_case
+  local case_dir
+  case_dir=$(make_case)
   local actual_status=0
   python3 "$manifest_tool" validate --root "$case_dir" --manifest "$case_dir/manifest" "$@" \
     >/dev/null 2>&1 || actual_status=$?
@@ -87,7 +92,8 @@ expect_failure_with_requested_paths() {
 }
 
 expect_rejected_path_escape() {
-  make_case
+  local case_dir
+  case_dir=$(make_case)
   mkdir "$workspace/outside"
   ln -s "$workspace/outside" "$case_dir/escape"
   local actual_status=0
@@ -101,13 +107,41 @@ expect_rejected_path_escape() {
 }
 
 expect_deduplicated_overlapping_paths() {
-  make_case
+  local case_dir
+  case_dir=$(make_case)
   python3 "$manifest_tool" generate --root "$case_dir" --manifest "$case_dir/overlapping-manifest" \
     cache cache/nested
   tail -n +2 "$case_dir/manifest" > "$case_dir/single-records"
   tail -n +2 "$case_dir/overlapping-manifest" > "$case_dir/overlapping-records"
   cmp "$case_dir/single-records" "$case_dir/overlapping-records"
   echo "PASS: overlapping requested paths are deduplicated"
+}
+
+expect_large_file_chunking() {
+  local case_dir
+  case_dir=$(make_case)
+  python3 -c 'import sys; open(sys.argv[1], "wb").write(b"x" * (3 * 1024 * 1024))' \
+    "$case_dir/cache/large-file"
+  python3 "$manifest_tool" generate --root "$case_dir" --manifest "$case_dir/manifest" cache
+  python3 "$manifest_tool" validate --root "$case_dir" --manifest "$case_dir/manifest" cache
+  echo "PASS: multi-chunk regular file"
+}
+
+expect_unsupported_filesystem_entry() {
+  local case_dir
+  case_dir=$(make_case)
+  if ! mkfifo "$case_dir/cache/fifo"; then
+    echo "SKIP: unsupported filesystem entry (mkfifo unavailable)"
+    return
+  fi
+  local actual_status=0
+  python3 "$manifest_tool" validate --root "$case_dir" --manifest "$case_dir/manifest" cache \
+    >/dev/null 2>&1 || actual_status=$?
+  if [ "$actual_status" -ne 1 ]; then
+    echo "expected exit 1 for unsupported filesystem entry, got $actual_status" >&2
+    exit 1
+  fi
+  echo "PASS: unsupported filesystem entry"
 }
 
 mkdir -p "$template/cache/nested"
@@ -142,6 +176,7 @@ expect_accepted_with_missing_optional_path
 expect_failure_with_requested_paths "requested-path invocation drift" 1 cache cache/nested
 expect_rejected_path_escape
 expect_deduplicated_overlapping_paths
+expect_large_file_chunking
 expect_failure "same-size regular-file content change" 1 \
   'printf "other fixture 0001\n" > "$1/cache/nested/file-0001"'
 expect_failure "regular-file size change" 1 \
@@ -164,8 +199,7 @@ expect_failure "symlink target change" 1 \
   'rm "$1/cache/link" && ln -s nested/file-0002 "$1/cache/link"'
 expect_failure "symlink deletion" 1 \
   'rm "$1/cache/link"'
-expect_failure "unsupported filesystem entry" 1 \
-  'mkfifo "$1/cache/fifo"'
+expect_unsupported_filesystem_entry
 expect_failure "truncated manifest" 1 \
   ': > "$1/manifest"'
 expect_failure "invalid manifest format" 1 \

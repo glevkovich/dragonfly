@@ -356,7 +356,7 @@ CSV=$TRACY/csvexport/build/tracy-csvexport
 # basic: aggregated per-zone stats (inclusive time) → CSV on stdout
 "$CSV" /tmp/df.tracy > /tmp/zones.csv
 
-# self time instead of inclusive (subtracts child zones — the honest CPU view)
+# self time instead of inclusive (subtracts child-zone elapsed time)
 "$CSV" -e /tmp/df.tracy > /tmp/zones_self.csv
 
 # only the V2 loop zones (name filter)
@@ -369,7 +369,7 @@ CSV=$TRACY/csvexport/build/tracy-csvexport
 | Flag | Meaning |
 |---|---|
 | *(none)* | aggregated per‑zone, **inclusive** time |
-| `-e` / `--self` | use **self** time (child zones subtracted) — best for CPU attribution |
+| `-e` / `--self` | use **self** elapsed time (child-zone duration subtracted) |
 | `-f <name>` / `--filter` | only zones whose name contains `<name>` (e.g. `V2.`) |
 | `-c` / `--case` | make the `-f` filter case‑sensitive |
 | `-u` / `--unwrap` | emit **one row per zone instance** instead of aggregates (large) |
@@ -391,6 +391,9 @@ flow: export v1 and v2, hand both CSVs to the agent, ask for the diff.
 **Two caveats.**
 - For a meaningful **v1‑vs‑v2 diff, capture both under identical load and duration** — otherwise only
   the *structure* (which zones exist, relative per‑call means) is comparable, not absolute totals.
+- **Self time is not CPU time.** `--self` removes nested child-zone duration, but the remaining
+  elapsed time can still include a parked fiber, including inside `V2.Squash` or `V2.Flush`. Use
+  **Sampling** to attribute on-CPU work; use zones to explain phase latency and wait structure.
 - **csvexport covers instrumentation zones only.** The **Sampling** flat profile (per‑function CPU,
   ghost zones, wait stacks) has **no** clean headless export in v0.11.1 — that part still needs the
   GUI (or paste the Sampling table).

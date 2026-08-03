@@ -875,7 +875,7 @@ Connection::Connection(Protocol protocol, util::HttpListenerBase* http_listener,
   creation_time_ = time(nullptr);
   last_interaction_ = creation_time_;
   last_read_time_ = creation_time_;
-  next_iobuf_resize_time_ = creation_time_;
+  next_iobuf_resize_allowed_time_ = creation_time_;
   id_ = NextClientId();
 
   migration_enabled_ = GetFlag(FLAGS_migrate_connections);
@@ -1841,7 +1841,6 @@ io::Result<size_t> Connection::HandleRecvSocket() {
 variant<error_code, Connection::ParserStatus> Connection::IoLoop() {
   error_code ec;
   ParserStatus parse_status = OK;
-  size_t max_iobfuf_len = GetFlag(FLAGS_max_client_iobuf_len);
 
   auto* peer = socket_.get();
   recv_buf_.res_len = 0;
@@ -1872,50 +1871,12 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoop() {
       return reply_builder_->GetError();
     }
 
-    if (parse_status == NEED_MORE) {
-      parse_status = OK;
-      MaybeShrinkIoBufOnLowUsage();
-
-      // Shrinking can compact unread input and free append space.
-      reached_capacity = io_buf_.AppendLen() == 0;
-
-      size_t capacity = io_buf_.Capacity();
-      if (capacity < max_iobfuf_len) {
-        size_t parser_hint = 0;
-        if (redis_parser_)
-          parser_hint = redis_parser_->parselen_hint();  // Could be done for MC as well.
-
-        // If we got a partial request and we managed to parse its
-        // length, make sure we have space to store it instead of
-        // increasing space incrementally.
-        // (Note: The buffer object is only working in power-of-2 sizes,
-        // so there's no danger of accidental O(n^2) behavior.)
-        if (parser_hint > capacity) {
-          ReadBufTracker tracker(io_buf_, id_);
-          io_buf_.Reserve(std::min(max_iobfuf_len, parser_hint));
-          RecordIoBufGrowth(capacity);
-        }
-
-        // If we got a partial request because iobuf was full, grow it up to
-        // a reasonable limit to save on Recv() calls.
-        if (reached_capacity && capacity < max_iobfuf_len) {
-          // Last io used most of the io_buf to the end.
-          ReadBufTracker tracker(io_buf_, id_);
-          io_buf_.Reserve(std::min(max_iobfuf_len, capacity * 2));
-          RecordIoBufGrowth(capacity);
-        }
-
-        if (io_buf_.AppendLen() == 0U) {
-          // it can happen with memcached but not for RedisParser, because RedisParser fully
-          // consumes the passed buffer
-          LOG_EVERY_T(WARNING, 10)
-              << CONN_ID
-              << "Maximum io_buf length reached, consider to increase max_client_iobuf_len flag";
-        }
-      }
-    } else if (parse_status != OK) {
+    if (parse_status == ERROR) {
       break;
     }
+
+    MaybeAdjustIoBufCapacity(parse_status, reached_capacity);
+    parse_status = OK;
   } while (peer->IsOpen());
 
   return parse_status;
@@ -3409,10 +3370,9 @@ void Connection::UpdateFromFlags() {
 }
 
 std::vector<std::string> Connection::GetMutableFlagNames() {
-  return base::GetFlagNames(
-      FLAGS_pipeline_queue_limit, FLAGS_pipeline_buffer_limit, FLAGS_max_busy_read_usec,
-      FLAGS_always_flush_pipeline, FLAGS_pipeline_squash_limit, FLAGS_pipeline_wait_batch_usec,
-      FLAGS_enable_iobuf_shrink, FLAGS_iobuf_shrink_min_idle_sec, FLAGS_iobuf_shrink_interval_sec);
+  return base::GetFlagNames(FLAGS_pipeline_queue_limit, FLAGS_pipeline_buffer_limit,
+                            FLAGS_max_busy_read_usec, FLAGS_always_flush_pipeline,
+                            FLAGS_pipeline_squash_limit, FLAGS_pipeline_wait_batch_usec);
 }
 
 void Connection::GetRequestSizeHistogramThreadLocal(std::string* hist) {
@@ -3587,42 +3547,36 @@ void Connection::ReadPendingInput() {
   }
 }
 
-void Connection::CheckIoBufCapacity(bool reached_capacity, base::IoBuf* io_buf) {
-  size_t max_io_buf_len = GetFlag(FLAGS_max_client_iobuf_len);
+void Connection::MaybeAdjustIoBufCapacity(ParserStatus parse_status, bool reached_capacity) {
+  DCHECK_NE(parse_status, ERROR);
 
-  size_t capacity = io_buf->Capacity();
-  if (capacity < max_io_buf_len) {
+  bool grew = false;
+  size_t max_io_buf_len = GetFlag(FLAGS_max_client_iobuf_len);
+  if (parse_status == NEED_MORE && io_buf_.Capacity() < max_io_buf_len) {
+    const size_t capacity = io_buf_.Capacity();
     size_t parser_hint = 0;
     if (redis_parser_)
       parser_hint = redis_parser_->parselen_hint();  // Could be done for MC as well.
 
-    // If we got a partial request and we managed to parse its
-    // length, make sure we have space to store it instead of
-    // increasing space incrementally.
-    // (Note: The buffer object is only working in power-of-2 sizes,
-    // so there's no danger of accidental O(n^2) behavior.)
-    if (parser_hint > capacity) {
-      ReadBufTracker tracker(*io_buf, id_);
-      io_buf->Reserve(std::min(max_io_buf_len, parser_hint));
+    // For incomplete requests, prefer the known request length over incremental growth.
+    const size_t target_capacity =
+        parser_hint > capacity
+            ? std::min(max_io_buf_len, parser_hint)
+            : (reached_capacity ? std::min(max_io_buf_len, capacity * 2) : capacity);
+    if (target_capacity > capacity) {
+      ReadBufTracker tracker(io_buf_, id_);
+      io_buf_.Reserve(target_capacity);
       RecordIoBufGrowth(capacity);
-    }
-
-    // If we got a partial request because iobuf was full, grow it up to
-    // a reasonable limit to save on Recv() calls.
-    if (reached_capacity && capacity < max_io_buf_len) {
-      // Last io used most of the io_buf to the end.
-      ReadBufTracker tracker(*io_buf, id_);
-      io_buf->Reserve(std::min(max_io_buf_len, capacity * 2));
-      RecordIoBufGrowth(capacity);
-    }
-
-    if (io_buf->AppendLen() == 0U) {
-      // it can happen with memcached but not for RedisParser, because RedisParser fully
-      // consumes the passed buffer
-      LOG_EVERY_T(WARNING, 10) << CONN_ID << "Maximum io_buf length reached " << io_buf->Capacity()
+      grew = true;
+    } else if (io_buf_.AppendLen() == 0U) {
+      // It can happen with Memcache but not Redis, because Redis consumes the passed buffer.
+      LOG_EVERY_T(WARNING, 10) << CONN_ID << "Maximum io_buf length reached " << io_buf_.Capacity()
                                << ", consider to increase max_client_iobuf_len flag";
     }
   }
+
+  if (!grew)
+    MaybeShrinkIoBufOnLowUsage();
 }
 
 void Connection::RecordReadData() {
@@ -3636,11 +3590,11 @@ void Connection::RecordIoBufGrowth(size_t previous_capacity) {
 
   // A larger buffer starts a new usage window at its current occupancy.
   io_buf_high_watermark_ = io_buf_.InputLen();
-  next_iobuf_resize_time_ = time(nullptr) + GetFlag(FLAGS_iobuf_shrink_interval_sec);
+  next_iobuf_resize_allowed_time_ = time(nullptr) + GetFlag(FLAGS_iobuf_shrink_interval_sec);
 }
 
 bool Connection::CanConsiderIoBufShrink(time_t now) const {
-  return (now >= next_iobuf_resize_time_) && (io_buf_.Capacity() > kMinReadSize) &&
+  return (now >= next_iobuf_resize_allowed_time_) && (io_buf_.Capacity() > kMinReadSize) &&
          GetFlag(FLAGS_enable_iobuf_shrink);
 }
 
@@ -3669,7 +3623,7 @@ bool Connection::ShrinkIoBufTo(size_t target_capacity, string_view reason) {
   ++conn_stats.iobuf_shrink_events;
   conn_stats.iobuf_shrink_bytes += reclaimed;
   io_buf_high_watermark_ = io_buf_.InputLen();
-  next_iobuf_resize_time_ = time(nullptr) + GetFlag(FLAGS_iobuf_shrink_interval_sec);
+  next_iobuf_resize_allowed_time_ = time(nullptr) + GetFlag(FLAGS_iobuf_shrink_interval_sec);
   DVLOG(2) << CONN_ID << "Shrank io_buf from " << previous_capacity << " to " << io_buf_.Capacity()
            << ", unread=" << io_buf_.InputLen() << ", reason=" << reason;
   return true;
@@ -3689,7 +3643,7 @@ void Connection::MaybeShrinkIoBufOnLowUsage() {
   }
 
   io_buf_high_watermark_ = io_buf_.InputLen();
-  next_iobuf_resize_time_ = now + GetFlag(FLAGS_iobuf_shrink_interval_sec);
+  next_iobuf_resize_allowed_time_ = now + GetFlag(FLAGS_iobuf_shrink_interval_sec);
 }
 
 void Connection::MaybeShrinkIoBufOnReceiveIdle() {
@@ -3959,12 +3913,8 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoopV2() {
       continue;
     }
 
-    if (parse_status == NEED_MORE) {
-      parse_status = OK;
-      MaybeShrinkIoBufOnLowUsage();
-      reached_capacity = io_buf_.AppendLen() == 0;
-      CheckIoBufCapacity(reached_capacity, &io_buf_);
-    }
+    MaybeAdjustIoBufCapacity(parse_status, reached_capacity);
+    parse_status = OK;
   } while (peer->IsOpen());
 
   return parse_status;

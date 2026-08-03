@@ -2256,6 +2256,39 @@ async def test_iobuf_shrinks_from_v1_active_path(df_server: DflyInstance):
 @dfly_args(
     {
         "proactor_threads": 1,
+        "enable_resp_io_loop_v2": "false",
+        "max_client_iobuf_len": 4096,
+        "iobuf_shrink_interval_sec": 1,
+    }
+)
+async def test_iobuf_shrinks_from_v1_complete_parse(df_server: DflyInstance):
+    observer = df_server.client()
+    client = df_server.client()
+    await observer.ping()
+
+    await client.set("iobuf-shrink-complete", "x" * 2048)
+    peak = int((await observer.info("clients"))["client_read_buffer_bytes"])
+
+    # The first complete parse closes the high-usage window. The second one, after the
+    # cooldown, can reclaim capacity based on the now-small watermark.
+    await asyncio.sleep(2)
+    await client.ping()
+    await asyncio.sleep(2)
+    await client.ping()
+
+    @assert_eventually(timeout=5)
+    async def wait_for_reclamation():
+        current = int((await observer.info("clients"))["client_read_buffer_bytes"])
+        assert current < peak
+
+    await wait_for_reclamation()
+    await client.aclose()
+    await observer.aclose()
+
+
+@dfly_args(
+    {
+        "proactor_threads": 1,
         "enable_resp_io_loop_v2": "true",
         "max_client_iobuf_len": 4096,
         "iobuf_shrink_min_idle_sec": 1,

@@ -388,7 +388,7 @@ class Connection : public util::Connection {
   // Drains currently available bytes from socket into io_buf_ using non-blocking reads.
   void ReadPendingInput();
 
-  void CheckIoBufCapacity(bool reached_capacity, base::IoBuf* buf);
+  void MaybeAdjustIoBufCapacity(ParserStatus parse_status, bool reached_capacity);
   void MaybeShrinkIoBufOnLowUsage();
   bool CanConsiderIoBufShrink(time_t now) const;
   bool ShouldShrinkIoBuf() const;
@@ -741,7 +741,7 @@ class Connection : public util::Connection {
 
   time_t creation_time_, last_interaction_;
   time_t last_read_time_;
-  time_t next_iobuf_resize_time_;
+  time_t next_iobuf_resize_allowed_time_;
   size_t io_buf_high_watermark_ = 0;
   std::string name_;
 

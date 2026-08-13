@@ -693,17 +693,16 @@ async def test_pubsub_unsubscribe(df_server: DflyInstance):
 # while earlier Pub/Sub messages were still queued, so the client saw messages after the unsubscribe confirmation (or lost them).
 # All messages must precede the confirmation.
 #
-# dfly_args: single proactor thread for deterministic reordering, and tiny quota to trigger anti starvation quickly
-@dfly_args({"proactor_threads": 1, "async_dispatch_quota": 4})
+# Runs four cases: V1 and V2, each with standalone UNSUBSCRIBE and GET + UNSUBSCRIBE. Use a single
+# proactor thread for deterministic reordering and a tiny quota to trigger anti-starvation quickly.
+@dfly_multi_test_args(
+    {"proactor_threads": 1, "async_dispatch_quota": 4, "enable_resp_io_loop_v2": "false"},
+    {"proactor_threads": 1, "async_dispatch_quota": 4, "enable_resp_io_loop_v2": "true"},
+)
+@pytest.mark.parametrize("pipeline_get", [False, True], ids=["standalone", "deferred_get"])
 async def test_pubsub_unsubscribe_message_loss(
-    df_server: DflyInstance, async_client: aioredis.Redis
+    df_server: DflyInstance, async_client: aioredis.Redis, pipeline_get: bool
 ):
-    # The fix currently only covers the V1 io loop. The V2 loop (IoLoopV2) still reorders
-    # UNSUBSCRIBE ahead of queued Pub/Sub messages, so skip until V2 is fixed.
-    # TODO: re-enable for V2 once the IoLoopV2 fix lands (see linked GitHub issue).
-    if is_resp_io_loop_v2(df_server):
-        pytest.skip("V2 io loop still reorders UNSUBSCRIBE ahead of queued messages; fix pending")
-
     publisher = async_client
     channel = "ordering-channel"
     # Well above async_dispatch_quota (and the socket buffer) so the surplus piles up
@@ -733,24 +732,39 @@ async def test_pubsub_unsubscribe_message_loss(
         for _ in range(message_count):
             assert await publisher.publish(channel, payload) == 1
 
-        await loop.sock_sendall(subscriber, f"UNSUBSCRIBE {channel}\r\n".encode())
+        unsubscribe_command = f"UNSUBSCRIBE {channel}\r\n".encode()
+        if pipeline_get:
+            # A deferred GET must not let the following UNSUBSCRIBE bypass older Pub/Sub messages.
+            await loop.sock_sendall(subscriber, b"GET ordering-key\r\n" + unsubscribe_command)
+        else:
+            await loop.sock_sendall(subscriber, unsubscribe_command)
 
-        # Drain replies until the unsubscribe confirmation, then keep reading through a
-        # short idle grace period to catch any message wrongly emitted after it.
+        # Drain replies until the unsubscribe confirmation. It must arrive within the deadline,
+        # but do not include the post-confirmation idle grace period in that deadline: draining
+        # the intentionally backlogged payload can consume most of it.
         stream = b""
         saw_unsubscribe = False
-        async with async_timeout.timeout(60):
-            while True:
+        async with async_timeout.timeout(10):
+            while not saw_unsubscribe:
                 try:
                     data = await asyncio.wait_for(loop.sock_recv(subscriber, 256 * 1024), 2.0)
                 except asyncio.TimeoutError:
-                    if saw_unsubscribe:
-                        break  # idle after the confirmation -> stream is complete
                     continue
                 if not data:
                     break
                 stream += data
                 saw_unsubscribe = saw_unsubscribe or unsubscribe_token in stream
+
+        # Keep reading through a short idle grace period to catch any message wrongly emitted
+        # after the unsubscribe confirmation.
+        while True:
+            try:
+                data = await asyncio.wait_for(loop.sock_recv(subscriber, 256 * 1024), 2.0)
+            except asyncio.TimeoutError:
+                break  # idle after the confirmation -> stream is complete
+            if not data:
+                break
+            stream += data
 
         assert saw_unsubscribe, "never received the unsubscribe confirmation"
 
@@ -3689,33 +3703,38 @@ async def test_pubsub_pipeline_starvation(df_server: DflyInstance):
     for _ in range(6):
         await reader.readline()
 
-    # Continuous Flood Task with batches of 500 commands (publisher)
-    keep_flooding = True
-
-    async def flood():
+    # One wave exceeds async_dispatch_quota by 10x. Waiting for its first message below ensures
+    # the subscriber is actively draining Pub/Sub work before injecting the control pipeline.
+    async def publish_wave():
         pub = aioredis.Redis(port=df_server.port)
-        while keep_flooding:
+        try:
             pipe = pub.pipeline(transaction=False)
             for _ in range(500):
                 pipe.publish("starvation_chan", "hello")
             await pipe.execute()
-            # short sleep to yield the event loop but maintain constant pressure
-            await asyncio.sleep(0.001)
-        await pub.aclose()
+        finally:
+            await pub.aclose()
 
-    # Create a separate, continuous background task: open a second connection (pub) and constantly publish messages to
-    # the starvation_chan in large batches of 500.
-    flood_task = asyncio.create_task(flood())
+    publisher_task = asyncio.create_task(publish_wave())
 
     try:
-        # Wait just 10ms for the first wave to hit the server's queue
-        await asyncio.sleep(0.01)
+        # Start counting after the first Pub/Sub message proves that the wave reached the
+        # subscriber. All messages preceding UNSUBSCRIBE are preserved by design.
+        pubsub_messages_before_ping = 0
+        async with async_timeout.timeout(2.0):
+            while True:
+                line = await reader.readline()
+                assert line, "Subscriber connection closed before receiving the publish wave"
+                if b"message" in line:
+                    pubsub_messages_before_ping = 1
+                    break
 
-        # Inject UNSUBSCRIBE + PING into the active flood.
-        # This triggers our quota logic, forcing the server to yield and read the commands from the TCP buffer, preventing input starvation.
+        # Inject UNSUBSCRIBE + PING while the publish wave is active. This triggers the quota
+        # logic, forcing the server to yield and read commands from the TCP buffer.
         writer.write(b"UNSUBSCRIBE starvation_chan\r\nPING starvation_survived\r\n")
         await writer.drain()
 
+        # Count the PubSub messages that arrive before the PING
         ping_found = False
         async with async_timeout.timeout(2.0):
             while True:
@@ -3730,9 +3749,15 @@ async def test_pubsub_pipeline_starvation(df_server: DflyInstance):
         # The PING must arrive within the timeout despite the Pub/Sub flood. If the async fiber
         # never yields to parse pending commands, this times out.
         assert ping_found, "PING was starved and timed out!"
+
+        # Assert 2: the quota logic prioritized the pipeline.
+        # A single bounded wave can contribute at most 500 earlier messages. A larger count
+        # would mean the control pipeline was starved behind work added after it was sent.
+        assert (
+            pubsub_messages_before_ping <= 500
+        ), f"Starvation detected! Pipeline queued behind {pubsub_messages_before_ping} messages."
     finally:
-        keep_flooding = False
-        await flood_task
+        await publisher_task
         writer.close()
         await writer.wait_closed()
 

@@ -1579,6 +1579,8 @@ void Connection::DispatchSingle(bool has_more, absl::FunctionRef<void()> invoke_
 
 Connection::ParserStatus Connection::ParseRedis(base::IoBuf& io_buf, uint32_t max_busy_cycles,
                                                 bool enqueue_only) {
+  DCHECK_EQ(enqueue_only, ioloop_v2_)
+      << "enqueue_only==true should only be used for ioloop_v2_ and vice versa";
   uint32_t consumed = 0;
   RespSrvParser::Result result = RespSrvParser::OK;
 
@@ -1614,8 +1616,13 @@ Connection::ParserStatus Connection::ParseRedis(base::IoBuf& io_buf, uint32_t ma
         io_req_size_hist->Add(request_consumed_bytes_);
       request_consumed_bytes_ = 0;
       bool has_more = consumed < read_buffer.size();
+      parsed_cmd_->has_unparsed_input = has_more;
 
-      if (tl_traffic_logger.log_file && tl_traffic_logger.listener_type == listener_type_) {
+      // V1 only: log traffic if requested. Traffic logging may write to a file and suspend the
+      // fiber. Since we cannot allow suspending the fiber during ParseRedis in V2 (e.g read+parse
+      // in proactor), traffic logging is done just before execution.
+      if (!enqueue_only && tl_traffic_logger.log_file &&
+          tl_traffic_logger.listener_type == listener_type_) {
         LogTraffic(id_, has_more, *parsed_cmd_, service_->GetContextInfo(cc_.get()));
       }
 
@@ -2031,6 +2038,7 @@ void Connection::DrainConnectionQueues() {
   DCHECK_EQ(parsed_cmd_q_bytes_, 0u);
   parsed_tail_ = nullptr;
   parsed_to_execute_ = nullptr;
+  logging_cursor_ = nullptr;
   dispatch_waiting_count_ = 0;
 
   ReleaseDeferredCheckpoints();
@@ -3023,6 +3031,27 @@ bool Connection::SquashPipelineV2() {
   return true;
 }
 
+bool Connection::IsV2TrafficLoggingActive() const {
+  return ioloop_v2_ && (protocol_ == Protocol::REDIS) && tl_traffic_logger.log_file &&
+         (tl_traffic_logger.listener_type == listener_type_);
+}
+
+void Connection::LogPendingTraffic() {
+  if (logging_cursor_ == nullptr)
+    return;
+
+  if (!IsV2TrafficLoggingActive()) {
+    logging_cursor_ = nullptr;
+    return;
+  }
+
+  while (logging_cursor_ != nullptr) {
+    ParsedCommand* cmd = logging_cursor_;
+    LogTraffic(id_, cmd->has_unparsed_input, *cmd, service_->GetContextInfo(cc_.get()));
+    logging_cursor_ = cmd->next;
+  }
+}
+
 bool Connection::ExecuteBatch() {
   // Invariant: batched_ must be false on entry.
   // Both ReplyBatch() and ExecuteBatch() reset it via absl::Cleanup guards on all return paths.
@@ -3062,6 +3091,20 @@ bool Connection::ExecuteBatch() {
   while (parsed_to_execute_ != nullptr) {
     if (reply_builder_->GetError())
       return false;
+
+    // V1 logs traffic during parsing. V2 can't, since it runs read+parse in a proactor callback
+    // (context), where traffic logging is unsafe because writing the log may suspend. A preceding
+    // dispatch may have allowed the proactor to append a newly unlogged command, so we must place
+    // it inside the loop. Starting logging can race with queued commands, so backfill the current
+    // undispatched suffix exactly once when logging becomes active.
+    const bool logging_active = IsV2TrafficLoggingActive();
+    const bool logging_just_started = logging_active && !traffic_logging_enabled_;
+    traffic_logging_enabled_ = logging_active;
+    if (logging_just_started)
+      logging_cursor_ = parsed_to_execute_;
+    if (logging_cursor_ != nullptr) {
+      LogPendingTraffic();
+    }
 
     if (pipeline_squashing_v2_ && dispatch_waiting_count_ > 1) {
       // if we squashed any commands, continue the loop to check if there are
@@ -3269,6 +3312,10 @@ void Connection::EnqueueParsedCommand(ParsedCommand* cmd) {
   }
   parsed_tail_ = cmd;
 
+  if (!logging_cursor_ && IsV2TrafficLoggingActive()) {
+    logging_cursor_ = cmd;
+  }
+
   size_t used_mem = cmd->UsedMemory();
   parsed_cmd_q_len_++;
   dispatch_waiting_count_++;  // the newly appended tail command is not yet dispatched
@@ -3343,6 +3390,7 @@ void Connection::AdjustParsedCmdBytes(ssize_t delta) {
 
 void Connection::DestroyParsedQueue() {
   ConnectionMemoryTracker memory_tracker(this);
+  logging_cursor_ = nullptr;
   while (parsed_head_ != nullptr) {
     auto* cmd = parsed_head_;
     parsed_head_ = cmd->next;

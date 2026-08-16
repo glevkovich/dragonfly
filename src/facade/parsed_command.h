@@ -72,6 +72,11 @@ class ParsedCommand : public cmn::BackedArguments {
   uint64_t parsed_cycle = 0;
   ParsedCommand* next = nullptr;
 
+  // True when bytes remained in the parser's input buffer after this command.
+  // V2 traffic logging is deferred until dispatch, so it preserves this parse-time
+  // boundary instead of inferring it later from the command queue.
+  bool has_unparsed_input = false;
+
   void Init(SinkReplyBuilder* rb, ConnectionContext* conn_cntx) {
     rb_ = rb;
     conn_cntx_ = conn_cntx;

@@ -561,6 +561,13 @@ class Connection : public util::Connection {
   // Returns true on successful execution, false on reply builder error.
   bool ReplyBatch();
 
+  // V2 RESP: Writes traffic records for every parsed command not logged yet, ahead of its dispatch.
+  // No-op unless this is a V2 RESP connection and this thread is recording its listener type.
+  void LogPendingTraffic();
+
+  // Returns true when V2 RESP traffic logging is currently active for this connection's listener.
+  bool IsV2TrafficLoggingActive() const;
+
   // True if this connection is actively contributing to the pipeline queue and that queue is
   // over the per-thread backpressure limit. The single source of truth for parse throttling.
   bool IsOverPipelineLimit() const;
@@ -691,6 +698,11 @@ class Connection : public util::Connection {
   ParsedCommand* parsed_tail_ = nullptr;
   ParsedCommand* parsed_to_execute_ = nullptr;
 
+  // V2 RESP: next queued command that has not yet been logged. It is null when no such
+  // command is pending and always points into [parsed_to_execute_, parsed_tail_]. Logging occurs
+  // before dispatch, and teardown clears this cursor after releasing queue entries.
+  ParsedCommand* logging_cursor_ = nullptr;
+
   // Total number of commands in parsed command queue
   size_t parsed_cmd_q_len_ = 0;
 
@@ -813,6 +825,10 @@ class Connection : public util::Connection {
       // The recv callback cannot return a status, so IoLoopV2 observes this flag and surfaces
       // ParserStatus::ERROR to close the connection and send the protocol-error reply.
       bool proactor_parse_error_ : 1;
+
+      // V2 RESP: whether traffic logging was active at the previous ExecuteBatch boundary.
+      // This detects a DEBUG TRAFFIC START transition and backfills queued, undispatched commands.
+      bool traffic_logging_enabled_ : 1;
 
       bool request_shutdown_ : 1;  // set when the connection is requested to shutdown
     };

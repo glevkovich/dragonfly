@@ -37,6 +37,7 @@ set(CMAKE_CXX_STANDARD 20)
 # Use ccache as the compiler launcher when available (local and CI).
 # Opt out with -DENABLE_CCACHE=OFF (or CCACHE_DISABLE=1 / ccache config).
 option(ENABLE_CCACHE "Use ccache as the compiler launcher when available" ON)
+option(ENABLE_PCH "Use target-local precompiled headers for local and CI builds" ON)
 set(_clear_launchers TRUE)
 if(ENABLE_CCACHE)
   find_program(CCACHE_PROGRAM ccache)

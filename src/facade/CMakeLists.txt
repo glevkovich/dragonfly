@@ -1,10 +1,16 @@
 add_library(dfly_parser_lib redis_parser.cc resp_expr.cc resp_parser.cc
             resp_srv_parser.cc)
+if (ENABLE_PCH)
+  target_precompile_headers(dfly_parser_lib PRIVATE pch.h)
+endif()
 cxx_link(dfly_parser_lib base strings_lib redis_lib)
 
 add_library(dfly_facade dragonfly_listener.cc dragonfly_connection.cc facade.cc
             memcache_parser.cc reply_builder.cc op_status.cc parsed_command.cc service_interface.cc
             reply_capture.cc cmd_arg_parser.cc tls_helpers.cc socket_utils.cc disk_backed_queue.cc)
+if (ENABLE_PCH)
+  target_precompile_headers(dfly_facade PRIVATE pch.h)
+endif()
 
 if (DF_USE_SSL)
   set(TLS_LIB tls_lib)

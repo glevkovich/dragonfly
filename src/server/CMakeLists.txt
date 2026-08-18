@@ -11,6 +11,9 @@ if(APPLE)
 endif()
 
 add_executable(dragonfly dfly_main.cc version_monitor.cc)
+if (ENABLE_PCH)
+  target_precompile_headers(dragonfly PRIVATE pch.h)
+endif()
 add_custom_target(check_dfly WORKING_DIRECTORY .. COMMAND ctest -L DFLY)
 cxx_link(dragonfly base dragonfly_lib)
 
@@ -24,6 +27,9 @@ set_property(SOURCE dfly_main.cc APPEND PROPERTY COMPILE_DEFINITIONS
              SOURCE_PATH_FROM_BUILD_ENV=${CMAKE_SOURCE_DIR})
 
 add_executable(dfly_bench dfly_bench.cc)
+if (ENABLE_PCH)
+  target_precompile_headers(dfly_bench PRIVATE pch.h)
+endif()
 cxx_link(dfly_bench dfly_parser_lib fibers2 absl::random_random redis_lib)
 
 # Include journal sources (not separate target for now)
@@ -40,6 +46,9 @@ add_library(dfly_transaction db_slice.cc blocking_controller.cc
             server_state.cc table.cc  transaction.cc tx_base.cc
             serializer_commons.cc
             acl/acl_log.cc slowlog.cc channel_store.cc)
+if (ENABLE_PCH)
+  target_precompile_headers(dfly_transaction PRIVATE pch.h)
+endif()
 cxx_link(dfly_transaction dfly_core strings_lib TRDP::fast_float TRDP::hdr_histogram)
 
 # Include search module
@@ -97,6 +106,10 @@ add_library(dragonfly_lib
             acl/user.cc acl/user_registry.cc acl/acl_family.cc
             acl/validator.cc
             sharding.cc cmd_support.cc)
+
+if (ENABLE_PCH)
+  target_precompile_headers(dragonfly_lib PRIVATE pch.h)
+endif()
 
 if (DF_ENABLE_MEMORY_TRACKING)
   target_compile_definitions(dragonfly_lib PRIVATE DFLY_ENABLE_MEMORY_TRACKING)

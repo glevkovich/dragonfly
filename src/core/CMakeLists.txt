@@ -31,6 +31,10 @@ add_library(dfly_core allocation_tracker.cc bloom.cc topk.cc compact_object.cc c
     detail/bitpacking.cc detail/listpack_wrap.cc detail/listpack.cc
     oah_entry.cc oah_pair.cc oah_ptr.cc oah_set.cc oah_table.cc)
 
+if (ENABLE_PCH)
+  target_precompile_headers(dfly_core PRIVATE pch.h)
+endif()
+
 cxx_link(dfly_core base dfly_search_core dfly_page_usage fibers2 jsonpath
     absl::flat_hash_map absl::str_format absl::random_random redis_lib
     TRDP::lua lua_modules

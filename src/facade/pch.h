@@ -1,0 +1,42 @@
+#pragma once
+
+#include <absl/cleanup/cleanup.h>
+#include <absl/container/flat_hash_map.h>
+#include <absl/container/flat_hash_set.h>
+#include <absl/container/inlined_vector.h>
+#include <absl/strings/match.h>
+#include <absl/strings/str_cat.h>
+#include <absl/strings/string_view.h>
+#include <absl/types/span.h>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <boost/asio/buffer.hpp>
+#include <boost/circular_buffer.hpp>
+#include <boost/iterator/iterator_facade.hpp>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <tuple>
+#include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <variant>
+#include <vector>
+
+#include "base/io_buf.h"
+#include "base/logging.h"
+#include "common/arg_range.h"
+#include "common/backed_args.h"
+#include "facade/facade_types.h"
+#include "facade/op_status.h"
+#include "facade/reply_builder.h"
+#include "util/fibers/fibers.h"
+#include "util/fibers/synchronization.h"

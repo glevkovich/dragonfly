@@ -4,10 +4,27 @@ on:
   schedule:
     - cron: "0 0/3 * * *"
   workflow_dispatch:
+    inputs:
+      test-suites:
+        description: "Comma, space, or newline-separated test filenames (for example: connection_test)"
+        required: false
+        default: ""
+        type: string
+      test-cases:
+        description: "Extended regular expression matched against pytest node IDs"
+        required: false
+        default: ""
+        type: string
+      iterations:
+        description: "Number of times to run the selected tests"
+        required: false
+        default: "1"
+        type: string
 
 jobs:
   build:
     if: github.repository == 'dragonflydb/dragonfly'
+    timeout-minutes: 360
     strategy:
       matrix:
         # Test of these containers
@@ -69,6 +86,10 @@ jobs:
           gspace-secret: ${{ secrets.GSPACES_BOT_DF_BUILD }}
           build-folder-name: build
           filter: ${{ matrix.build-type == 'Release' && 'not debug_only' || 'not opt_only' }}
+          test-suites: ${{ inputs.test-suites || '' }}
+          test-cases: ${{ inputs.test-cases || '' }}
+          iterations: ${{ inputs.iterations || '1' }}
+          test-timeout-minutes: '357'
           df-runtime-flags: enable_resp_io_loop_v2=${{ matrix.enable_resp_io_loop_v2 }}
           s3-bucket: ${{ secrets.S3_REGTEST_BUCKET }}
           junit-s3-bucket: ${{ secrets.S3_REGTEST_BUCKET }}

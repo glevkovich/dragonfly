@@ -59,6 +59,26 @@ inputs:
     required: false
     type: string
     description: "Runtime flags to pass to the dragonfly process via --df, e.g. 'enable_resp_io_loop_v2=true'"
+  test-suites:
+    required: false
+    default: ""
+    type: string
+    description: "Comma, space, or newline-separated pytest filenames relative to tests/dragonfly"
+  test-cases:
+    required: false
+    default: ""
+    type: string
+    description: "Extended regular expression matched against collected pytest node IDs"
+  iterations:
+    required: false
+    default: "1"
+    type: string
+    description: "Number of times to run the selected pytest tests"
+  test-timeout-minutes:
+    required: false
+    default: "357"
+    type: string
+    description: "Total test-runtime limit in minutes"
 
 runs:
   using: "composite"
@@ -113,7 +133,7 @@ runs:
         } >> "${GITHUB_ENV}"
 
     - name: Run S3 snapshot tests with MinIO
-      if: inputs.s3-bucket != ''
+      if: inputs.s3-bucket != '' && inputs.test-suites == '' && inputs.test-cases == '' && inputs.iterations == '1'
       shell: bash
       run: |
         echo "=== Running S3 snapshot tests with local MinIO ==="
@@ -137,6 +157,33 @@ runs:
         export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 # to crash on errors
         export FILTER="${{inputs.filter}}"
         JUNIT_DIR="${REGRESSION_JUNIT_DIR}"
+
+        if ! [[ "${ITERATIONS_INPUT}" =~ ^[1-9][0-9]*$ ]]; then
+          echo "iterations must be a positive integer, got: ${ITERATIONS_INPUT}"
+          exit 2
+        fi
+        if ! [[ "${TEST_TIMEOUT_MINUTES_INPUT}" =~ ^[1-9][0-9]*$ ]]; then
+          echo "test-timeout-minutes must be a positive integer, got: ${TEST_TIMEOUT_MINUTES_INPUT}"
+          exit 2
+        fi
+
+        TEST_PATHS=()
+        if [[ -n "${TEST_SUITES_INPUT}" ]]; then
+          normalized_suites="${TEST_SUITES_INPUT//,/ }"
+          for suite in ${normalized_suites}; do
+            suite="${suite%.py}.py"
+            if [[ "${suite}" != */* ]]; then
+              suite="dragonfly/${suite}"
+            fi
+            if [[ ! -f "${suite}" ]]; then
+              echo "Test suite not found: ${suite}"
+              exit 2
+            fi
+            TEST_PATHS+=("${suite}")
+          done
+        else
+          TEST_PATHS=(dragonfly)
+        fi
 
         # Runtime flags forwarded to the dragonfly process via --df.
         # Globbing is disabled while splitting so values like vmodule=*=1 are preserved,
@@ -162,18 +209,50 @@ runs:
 
         if [[ "${REGRESSION_JUNIT_KIND}" == 'epoll' ]]; then
           FILTER="$FILTER and not exclude_epoll"
-          # Run only replication tests with epoll
-          timeout 80m pytest -m "$FILTER" --durations=10 --timeout=300 --color=yes \
-            --json-report --json-report-file=report.json \
-            --junitxml="${JUNIT_DIR}/pytest-${REGRESSION_JUNIT_KIND}.xml" \
-            dragonfly --df force_epoll=true "${DF_RUNTIME_ARGS[@]}" --log-cli-level=INFO || code=$?
         else
-          # Run only replication tests with iouring
-          timeout 80m pytest -m "$FILTER" --durations=10 --timeout=300 --color=yes \
-            --json-report --json-report-file=report.json \
-            --junitxml="${JUNIT_DIR}/pytest-${REGRESSION_JUNIT_KIND}.xml" \
-            dragonfly "${DF_RUNTIME_ARGS[@]}" --log-cli-level=INFO || code=$?
+          :
         fi
+
+        SELECTED_TESTS=()
+        if [[ -n "${TEST_CASES_INPUT}" ]]; then
+          mapfile -t SELECTED_TESTS < <(
+            pytest -m "$FILTER" --collect-only -q --color=no "${TEST_PATHS[@]}" 2>/dev/null |
+              grep -E -- "${TEST_CASES_INPUT}" || true
+          )
+          if [[ "${#SELECTED_TESTS[@]}" -eq 0 ]]; then
+            echo "No tests matched test-cases regex: ${TEST_CASES_INPUT}"
+            exit 2
+          fi
+        else
+          SELECTED_TESTS=("${TEST_PATHS[@]}")
+        fi
+
+        deadline_seconds=$((SECONDS + TEST_TIMEOUT_MINUTES_INPUT * 60))
+        for iteration in $(seq 1 "${ITERATIONS_INPUT}"); do
+          remaining_seconds=$((deadline_seconds - SECONDS))
+          if [[ "${remaining_seconds}" -le 0 ]]; then
+            code=124
+            break
+          fi
+
+          echo "=== Regression test iteration ${iteration}/${ITERATIONS_INPUT} ==="
+          junit_file="${JUNIT_DIR}/pytest-${REGRESSION_JUNIT_KIND}-${iteration}.xml"
+          if [[ "${REGRESSION_JUNIT_KIND}" == 'epoll' ]]; then
+            timeout --foreground "${remaining_seconds}s" pytest -m "$FILTER" --durations=10 \
+              --timeout=300 --color=yes --json-report --json-report-file=report.json \
+              --junitxml="${junit_file}" "${SELECTED_TESTS[@]}" --df force_epoll=true \
+              "${DF_RUNTIME_ARGS[@]}" --log-cli-level=INFO || code=$?
+          else
+            timeout --foreground "${remaining_seconds}s" pytest -m "$FILTER" --durations=10 \
+              --timeout=300 --color=yes --json-report --json-report-file=report.json \
+              --junitxml="${junit_file}" "${SELECTED_TESTS[@]}" "${DF_RUNTIME_ARGS[@]}" \
+              --log-cli-level=INFO || code=$?
+          fi
+
+          if [[ "${code:-0}" -ne 0 ]]; then
+            break
+          fi
+        done
 
         # timeout returns 124 if we exceeded the timeout duration
         if [[ $code -eq 124 ]]; then
@@ -196,6 +275,10 @@ runs:
         # Pass the raw runtime-flags input through the environment so the value is never
         # embedded directly in the shell script (avoids shell injection).
         DF_RUNTIME_FLAGS_INPUT: ${{ inputs.df-runtime-flags }}
+        TEST_SUITES_INPUT: ${{ inputs.test-suites }}
+        TEST_CASES_INPUT: ${{ inputs.test-cases }}
+        ITERATIONS_INPUT: ${{ inputs.iterations }}
+        TEST_TIMEOUT_MINUTES_INPUT: ${{ inputs.test-timeout-minutes }}
         # Add environment variables to enable the S3 snapshot test.
         # AWS credentials: if inputs provided, use them; otherwise rely on workflow OIDC auth
         DRAGONFLY_S3_BUCKET: ${{ inputs.s3-bucket }}

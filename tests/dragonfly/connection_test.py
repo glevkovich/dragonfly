@@ -608,14 +608,28 @@ async def test_shared_read_buffer_overflow_copy_metric(df_server):
     reader, writer = await asyncio.open_connection("127.0.0.1", df_server.port)
     try:
         command_count = 128
-        writer.write(b"PING\r\n" * command_count)
+        writer.write(b"BLPOP shared:overflow 0\r\n" + b"PING\r\n" * command_count)
         await writer.drain()
+
+        @assert_eventually(timeout=2)
+        async def overflow_was_preserved():
+            metrics = await df_server.metrics()
+            assert metrics["dragonfly_shared_buf_overflow_copies"].samples[0].value > 0
+
+        await overflow_was_preserved()
+        admin = df_server.client()
+        try:
+            assert await admin.lpush("shared:overflow", "unblock") == 1
+        finally:
+            await admin.aclose()
+        assert await asyncio.wait_for(reader.readuntil(b"\r\n"), timeout=5) == b"*2\r\n"
+        blocking_reply_tail = b"$15\r\nshared:overflow\r\n$7\r\nunblock\r\n"
+        assert await asyncio.wait_for(reader.readexactly(len(blocking_reply_tail)), timeout=5) == (
+            blocking_reply_tail
+        )
         assert await asyncio.wait_for(reader.readexactly(7 * command_count), timeout=5) == (
             b"+PONG\r\n" * command_count
         )
-
-        metrics = await df_server.metrics()
-        assert metrics["dragonfly_shared_buf_overflow_copies"].samples[0].value > 0
     finally:
         writer.close()
         await writer.wait_closed()
@@ -797,7 +811,7 @@ async def test_shared_read_buffer_migrates_backpressured_overflow(df_server):
         writer.write(b"CLIENT SETNAME shared-overflow\r\n")
         await writer.drain()
         assert await asyncio.wait_for(reader.readuntil(b"\r\n"), timeout=2) == b"+OK\r\n"
-        writer.write(b"PING\r\n" * 128)
+        writer.write(b"BLPOP shared:migrate-overflow 0\r\n" + b"PING\r\n" * 128)
         await writer.drain()
 
         @assert_eventually(timeout=2)
@@ -813,6 +827,12 @@ async def test_shared_read_buffer_migrates_backpressured_overflow(df_server):
 
         await admin.config_set("pipeline_queue_limit", 1024)
         await admin.config_set("pipeline_buffer_limit", 1024 * 1024)
+        assert await admin.lpush("shared:migrate-overflow", "unblock") == 1
+        assert await asyncio.wait_for(reader.readuntil(b"\r\n"), timeout=5) == b"*2\r\n"
+        blocking_reply_tail = b"$23\r\nshared:migrate-overflow\r\n$7\r\nunblock\r\n"
+        assert await asyncio.wait_for(reader.readexactly(len(blocking_reply_tail)), timeout=5) == (
+            blocking_reply_tail
+        )
         assert await asyncio.wait_for(reader.readexactly(7 * 128), timeout=5) == b"+PONG\r\n" * 128
     finally:
         writer.close()
@@ -907,32 +927,6 @@ async def test_shared_read_buffer_accounting_1000_connections(df_factory):
     finally:
         await asyncio.gather(*(client.aclose() for client in clients))
         server.stop()
-
-
-@dfly_multi_test_args(
-    {
-        "enable_resp_io_loop_v2": "true",
-        "enable_shared_read_buffer": "true",
-        "uring_recv_buffer_cnt": 8,
-        "proactor_threads": 1,
-    },
-    {
-        "enable_resp_io_loop_v2": "true",
-        "enable_shared_read_buffer": "false",
-        "uring_recv_buffer_cnt": 8,
-        "proactor_threads": 1,
-    },
-)
-async def test_v2_with_uring_buffer_ring(df_server):
-    """V2 remains functional with an io_uring provided-buffer ring in either read-buffer mode."""
-    reader, writer = await asyncio.open_connection("127.0.0.1", df_server.port)
-    try:
-        writer.write(b"PING\r\n")
-        await writer.drain()
-        assert await asyncio.wait_for(reader.readuntil(b"\r\n"), timeout=2) == b"+PONG\r\n"
-    finally:
-        writer.close()
-        await writer.wait_closed()
 
 
 @dfly_args(

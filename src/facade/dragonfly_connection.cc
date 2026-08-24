@@ -1435,10 +1435,14 @@ io::Result<bool> Connection::CheckForHttpProto() {
   auto* peer = socket_.get();
   do {
     CHECK_LT(io_buf_.InputLen(), probe_limit);
-    // Make sure the receive destination (view on append buffer) is no larger than the remaining
-    // probe space, so this read cannot increase InputLen() beyond probe_limit.
+
+    // A receive must fit both the private buffer's available append space and the remaining
+    // protocol-probe allowance. The private buffer can be smaller than the remaining allowance
+    // while it grows across probe reads.
     auto buf = io_buf_.AppendBuffer();
-    buf = buf.first(probe_limit - io_buf_.InputLen());
+    const size_t read_len = std::min(buf.size(), probe_limit - io_buf_.InputLen());
+    buf = buf.first(read_len);
+
     // Make sure there is append space for the next Recv() call:
     DCHECK(!buf.empty());
 

@@ -9,6 +9,7 @@ import struct
 import subprocess
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from threading import Thread
 from typing import Awaitable, Callable
 
@@ -32,6 +33,7 @@ from .instance import DflyInstance, DflyInstanceFactory
 from .utility import assert_eventually, parse_client_list, tick_timer
 
 BASE_PORT = 1111
+TLS_CERTIFICATES_DIR = Path(__file__).parents[2] / "helio" / "util" / "tls" / "certificates"
 
 
 def is_resp_io_loop_v2(server: DflyInstance) -> bool:
@@ -411,6 +413,139 @@ async def test_shared_read_buffer_interleaved_fragmented_resp(df_server):
         "proactor_threads": 1,
     }
 )
+async def test_shared_read_buffer_interleaved_pipelines(df_server):
+    """Concurrent pipelines on one proactor retain each connection's command stream."""
+    reader_a, writer_a = await asyncio.open_connection("127.0.0.1", df_server.port)
+    reader_b, writer_b = await asyncio.open_connection("127.0.0.1", df_server.port)
+    try:
+        command_count = 128
+        pipeline_a = b"".join(
+            f"SET shared:a:{index} value-a-{index}\r\n".encode() for index in range(command_count)
+        )
+        pipeline_b = b"".join(
+            f"SET shared:b:{index} value-b-{index}\r\n".encode() for index in range(command_count)
+        )
+
+        # Leave A's first pipeline incomplete while B uses the same proactor's shared buffer.
+        split_at = len(pipeline_a) // 2
+        writer_a.write(pipeline_a[:split_at])
+        await writer_a.drain()
+        await asyncio.sleep(0)
+        writer_b.write(pipeline_b)
+        await writer_b.drain()
+        writer_a.write(pipeline_a[split_at:])
+        await writer_a.drain()
+
+        expected = b"+OK\r\n" * command_count
+        assert await asyncio.wait_for(reader_a.readexactly(len(expected)), timeout=5) == expected
+        assert await asyncio.wait_for(reader_b.readexactly(len(expected)), timeout=5) == expected
+
+        writer_a.write(b"GET shared:a:127\r\n")
+        writer_b.write(b"GET shared:b:127\r\n")
+        await writer_a.drain()
+        await writer_b.drain()
+        assert await asyncio.wait_for(reader_a.readuntil(b"\r\n"), timeout=2) == b"$11\r\n"
+        assert await asyncio.wait_for(reader_a.readexactly(13), timeout=2) == b"value-a-127\r\n"
+        assert await asyncio.wait_for(reader_b.readuntil(b"\r\n"), timeout=2) == b"$11\r\n"
+        assert await asyncio.wait_for(reader_b.readexactly(13), timeout=2) == b"value-b-127\r\n"
+    finally:
+        writer_a.close()
+        writer_b.close()
+        await writer_a.wait_closed()
+        await writer_b.wait_closed()
+
+
+@dfly_args(
+    {
+        "enable_resp_io_loop_v2": "true",
+        "enable_shared_read_buffer": "true",
+        "shared_read_buffer_len": "1024",
+        "proactor_threads": 1,
+    }
+)
+async def test_shared_read_buffer_fragmented_large_bulk(df_server):
+    """A fragmented bulk payload survives repeated shared-buffer reuse by another connection."""
+    reader_a, writer_a = await asyncio.open_connection("127.0.0.1", df_server.port)
+    reader_b, writer_b = await asyncio.open_connection("127.0.0.1", df_server.port)
+    value = bytes(index % 251 for index in range(64 * 1024))
+    request_header = b"*3\r\n$3\r\nSET\r\n$17\r\nshared:large-bulk\r\n$65536\r\n"
+
+    try:
+        # Send a partial bulk, then repeatedly let B occupy the proactor between A's fragments.
+        writer_a.write(request_header)
+        await writer_a.drain()
+        for offset in range(0, len(value), 257):
+            writer_a.write(value[offset : offset + 257])
+            await writer_a.drain()
+            if offset % (257 * 8) == 0:
+                writer_b.write(b"PING\r\n")
+                await writer_b.drain()
+                assert (
+                    await asyncio.wait_for(reader_b.readuntil(b"\r\n"), timeout=2) == b"+PONG\r\n"
+                )
+        writer_a.write(b"\r\n")
+        await writer_a.drain()
+        assert await asyncio.wait_for(reader_a.readuntil(b"\r\n"), timeout=5) == b"+OK\r\n"
+
+        writer_a.write(b"GET shared:large-bulk\r\n")
+        await writer_a.drain()
+        assert await asyncio.wait_for(reader_a.readuntil(b"\r\n"), timeout=5) == b"$65536\r\n"
+        assert (
+            await asyncio.wait_for(reader_a.readexactly(len(value) + 2), timeout=5)
+            == value + b"\r\n"
+        )
+    finally:
+        writer_a.close()
+        writer_b.close()
+        await writer_a.wait_closed()
+        await writer_b.wait_closed()
+
+
+@dfly_args(
+    {
+        "enable_resp_io_loop_v2": "true",
+        "enable_shared_read_buffer": "true",
+        "shared_read_buffer_len": "1024",
+        "proactor_threads": 1,
+    }
+)
+async def test_shared_read_buffer_split_inline_and_length_lines(df_server):
+    """RESP parser state, rather than bytes in the shared buffer, carries split command lines."""
+    reader_a, writer_a = await asyncio.open_connection("127.0.0.1", df_server.port)
+    reader_b, writer_b = await asyncio.open_connection("127.0.0.1", df_server.port)
+    try:
+        writer_a.write(b"PI")
+        await writer_a.drain()
+        writer_b.write(b"PING\r\n")
+        await writer_b.drain()
+        assert await asyncio.wait_for(reader_b.readuntil(b"\r\n"), timeout=2) == b"+PONG\r\n"
+        writer_a.write(b"NG\r\n")
+        await writer_a.drain()
+        assert await asyncio.wait_for(reader_a.readuntil(b"\r\n"), timeout=2) == b"+PONG\r\n"
+
+        writer_a.write(b"*1\r\n$4\r\nPI")
+        await writer_a.drain()
+        writer_b.write(b"PING\r\n")
+        await writer_b.drain()
+        assert await asyncio.wait_for(reader_b.readuntil(b"\r\n"), timeout=2) == b"+PONG\r\n"
+        writer_a.write(b"NG\r\n")
+        await writer_a.drain()
+        assert await asyncio.wait_for(reader_a.readuntil(b"\r\n"), timeout=2) == b"+PONG\r\n"
+    finally:
+        writer_a.close()
+        writer_b.close()
+        await writer_a.wait_closed()
+        await writer_b.wait_closed()
+
+
+@dfly_args(
+    {
+        "enable_resp_io_loop_v2": "true",
+        "enable_shared_read_buffer": "true",
+        "shared_read_buffer_len": "1024",
+        "proactor_threads": 1,
+    }
+)
 async def test_shared_read_buffer_drains_silent_pipeline(df_server):
     """
     Tests how the server handles a large wave of commands sent all at once, purposely exceeding the
@@ -484,6 +619,294 @@ async def test_shared_read_buffer_overflow_copy_metric(df_server):
     finally:
         writer.close()
         await writer.wait_closed()
+
+
+@dfly_args(
+    {
+        "enable_resp_io_loop_v2": "true",
+        "enable_shared_read_buffer": "true",
+        "shared_read_buffer_len": "1024",
+        "proactor_threads": 1,
+    }
+)
+async def test_shared_read_buffer_blocking_command_releases_borrow(df_server):
+    """A callback can parse after BLPOP blocks without pinning the shared buffer."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", df_server.port)
+    client = df_server.client()
+    try:
+        # SET is parsed while the connection is blocked in BLPOP, so it exercises callback parsing.
+        writer.write(b"BLPOP shared:block 0\r\nSET shared:after-block value\r\n")
+        await writer.drain()
+        await asyncio.sleep(0.05)
+        assert await client.lpush("shared:block", "unblock") == 1
+
+        first_reply = await asyncio.wait_for(_read_resp_frame(reader), timeout=2)
+        assert b"shared:block" in first_reply
+        assert b"unblock" in first_reply
+        assert await asyncio.wait_for(_read_resp_frame(reader), timeout=2) == b"+OK\r\n"
+        assert await client.get("shared:after-block") == "value"
+    finally:
+        writer.close()
+        await writer.wait_closed()
+        await client.aclose()
+
+
+@dfly_args(
+    {
+        "enable_resp_io_loop_v2": "true",
+        "enable_shared_read_buffer": "true",
+        "shared_read_buffer_len": "1024",
+        "proactor_threads": 1,
+    }
+)
+async def test_shared_read_buffer_multi_exec_split(df_server):
+    """A transaction split at a RESP boundary retains its connection-owned parser state."""
+    reader_a, writer_a = await asyncio.open_connection("127.0.0.1", df_server.port)
+    reader_b, writer_b = await asyncio.open_connection("127.0.0.1", df_server.port)
+    try:
+        writer_a.write(b"MULTI\r\nSET shared:tx value\r\nEX")
+        await writer_a.drain()
+        writer_b.write(b"PING\r\n")
+        await writer_b.drain()
+        assert await asyncio.wait_for(reader_b.readuntil(b"\r\n"), timeout=2) == b"+PONG\r\n"
+
+        writer_a.write(b"EC\r\n")
+        await writer_a.drain()
+        assert await asyncio.wait_for(_read_resp_frame(reader_a), timeout=2) == b"+OK\r\n"
+        assert await asyncio.wait_for(_read_resp_frame(reader_a), timeout=2) == b"+QUEUED\r\n"
+        assert await asyncio.wait_for(_read_resp_frame(reader_a), timeout=2) == b"*1\r\n+OK\r\n"
+
+        writer_a.write(b"GET shared:tx\r\n")
+        await writer_a.drain()
+        assert await asyncio.wait_for(_read_resp_frame(reader_a), timeout=2) == b"$5\r\nvalue\r\n"
+    finally:
+        writer_a.close()
+        writer_b.close()
+        await writer_a.wait_closed()
+        await writer_b.wait_closed()
+
+
+@dfly_args(
+    {
+        "enable_resp_io_loop_v2": "true",
+        "enable_shared_read_buffer": "true",
+        "shared_read_buffer_len": "1024",
+        "proactor_threads": 1,
+    }
+)
+async def test_shared_read_buffer_protocol_error_closes_connection(df_server):
+    """A parser failure discards shared-buffer residue, replies, and closes only that client."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", df_server.port)
+    healthy_client = df_server.client()
+    try:
+        writer.write(b"PING\r\n")
+        await writer.drain()
+        assert await asyncio.wait_for(reader.readuntil(b"\r\n"), timeout=2) == b"+PONG\r\n"
+
+        writer.write(b"*x\r\n")
+        await writer.drain()
+        error = await asyncio.wait_for(reader.readuntil(b"\r\n"), timeout=2)
+        assert error.startswith(b"-ERR Protocol error")
+        assert await asyncio.wait_for(reader.read(), timeout=2) == b""
+
+        # The next borrower on the same proactor must still receive and parse normally.
+        assert await healthy_client.ping() is True
+    finally:
+        writer.close()
+        await writer.wait_closed()
+        await healthy_client.aclose()
+
+
+@dfly_args(
+    {
+        "enable_resp_io_loop_v2": "true",
+        "enable_shared_read_buffer": "true",
+        "shared_read_buffer_len": "1024",
+        "pipeline_queue_limit": 1,
+        "pipeline_buffer_limit": "1024",
+        "proactor_threads": 1,
+    }
+)
+async def test_shared_read_buffer_backpressure_recovers_without_new_write(df_server):
+    """Overflow input drains after backpressure relief without another client write."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", df_server.port)
+    admin = df_server.client()
+    try:
+        command_count = 128
+        writer.write(b"PING\r\n" * command_count)
+        await writer.drain()
+        await asyncio.sleep(0.05)
+
+        # Waking a parked shared-buffer fiber must restore and process its preserved suffix.
+        await admin.config_set("pipeline_queue_limit", command_count + 1)
+        await admin.config_set("pipeline_buffer_limit", 1024 * 1024)
+        assert await asyncio.wait_for(reader.readexactly(7 * command_count), timeout=5) == (
+            b"+PONG\r\n" * command_count
+        )
+    finally:
+        writer.close()
+        await writer.wait_closed()
+        await admin.aclose()
+
+
+@dfly_args(
+    {
+        "enable_resp_io_loop_v2": "true",
+        "enable_shared_read_buffer": "true",
+        "shared_read_buffer_len": "1024",
+        "proactor_threads": 1,
+    }
+)
+async def test_shared_read_buffer_reset_and_pause(df_server):
+    """RESET and CLIENT PAUSE do not retain the buffer across their control-path waits."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", df_server.port)
+    admin = df_server.client()
+    try:
+        writer.write(b"CLIENT SETNAME shared-reset\r\nRESET\r\nPING\r\n")
+        await writer.drain()
+        assert await asyncio.wait_for(_read_resp_frame(reader), timeout=2) == b"+OK\r\n"
+        assert await asyncio.wait_for(_read_resp_frame(reader), timeout=2) == b"+RESET\r\n"
+        assert await asyncio.wait_for(_read_resp_frame(reader), timeout=2) == b"+PONG\r\n"
+
+        assert await admin.execute_command("CLIENT", "PAUSE", "50", "WRITE") == "OK"
+        writer.write(b"SET shared:pause value\r\n")
+        await writer.drain()
+        assert await asyncio.wait_for(_read_resp_frame(reader), timeout=2) == b"+OK\r\n"
+        assert await admin.get("shared:pause") == "value"
+    finally:
+        writer.close()
+        await writer.wait_closed()
+        await admin.aclose()
+
+
+@dfly_args(
+    {
+        "enable_resp_io_loop_v2": "true",
+        "enable_shared_read_buffer": "true",
+        "shared_read_buffer_len": "1024",
+        "pipeline_queue_limit": 1,
+        "pipeline_buffer_limit": "1024",
+        "proactor_threads": 2,
+    }
+)
+async def test_shared_read_buffer_migrates_backpressured_overflow(df_server):
+    """A connection retains shared-buffer overflow safely while migrating between proactors."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", df_server.port)
+    admin = df_server.client()
+    try:
+        writer.write(b"CLIENT SETNAME shared-overflow\r\n")
+        await writer.drain()
+        assert await asyncio.wait_for(reader.readuntil(b"\r\n"), timeout=2) == b"+OK\r\n"
+        writer.write(b"PING\r\n" * 128)
+        await writer.drain()
+
+        @assert_eventually(timeout=2)
+        async def overflow_was_preserved():
+            metrics = await df_server.metrics()
+            assert metrics["dragonfly_shared_buf_overflow_copies"].samples[0].value > 0
+
+        await overflow_was_preserved()
+        client_info = parse_client_list(await admin.execute_command("CLIENT LIST"))
+        migrant = next(client for client in client_info if client["name"] == "shared-overflow")
+        current_tid = int(migrant["tid"])
+        assert await admin.execute_command("CLIENT", "MIGRATE", migrant["id"], 1 - current_tid) == 1
+
+        await admin.config_set("pipeline_queue_limit", 1024)
+        await admin.config_set("pipeline_buffer_limit", 1024 * 1024)
+        assert await asyncio.wait_for(reader.readexactly(7 * 128), timeout=5) == b"+PONG\r\n" * 128
+    finally:
+        writer.close()
+        await writer.wait_closed()
+        await admin.aclose()
+
+
+async def test_shared_read_buffer_tls_fragmented(df_factory):
+    """Fragmented TLS plaintext is reassembled on the shared V2 path while another client runs."""
+    server = df_factory.create(
+        enable_resp_io_loop_v2="true",
+        enable_shared_read_buffer="true",
+        shared_read_buffer_len=1024,
+        proactor_threads=1,
+        tls=None,
+        tls_cert_file=str(TLS_CERTIFICATES_DIR / "server-cert.pem"),
+        tls_key_file=str(TLS_CERTIFICATES_DIR / "server-key.pem"),
+        requirepass="shared-tls-password",
+    )
+    server.start()
+    ssl_ctx = ssl.create_default_context()
+    ssl_ctx.check_hostname = False
+    ssl_ctx.verify_mode = ssl.CERT_NONE
+    reader, writer = await asyncio.open_connection("127.0.0.1", server.port, ssl=ssl_ctx)
+    other = server.client(password="shared-tls-password", ssl=True, ssl_cert_reqs=None)
+    value = b"x" * 8192
+    request = b"*3\r\n$3\r\nSET\r\n$10\r\ntls:shared\r\n$8192\r\n" + value + b"\r\n"
+    try:
+        writer.write(b"AUTH shared-tls-password\r\n")
+        await writer.drain()
+        assert await asyncio.wait_for(reader.readuntil(b"\r\n"), timeout=2) == b"+OK\r\n"
+        for offset in range(0, len(request), 137):
+            writer.write(request[offset : offset + 137])
+            await writer.drain()
+            if offset == 0:
+                assert await other.ping() is True
+        assert await asyncio.wait_for(reader.readuntil(b"\r\n"), timeout=5) == b"+OK\r\n"
+        assert await other.get("tls:shared") == "x" * 8192
+    finally:
+        writer.close()
+        await writer.wait_closed()
+        await other.aclose()
+        server.stop()
+
+
+async def test_shared_read_buffer_unix_and_admin_connections(df_factory, tmp_dir):
+    """Shared V2 selection works for Unix-domain and admin RESP listeners."""
+    server = df_factory.create(
+        enable_resp_io_loop_v2="true",
+        enable_shared_read_buffer="true",
+        shared_read_buffer_len=1024,
+        proactor_threads=1,
+        port=BASE_PORT,
+        admin_port=BASE_PORT + 1,
+        unixsocket="./shared.sock",
+    )
+    server.start()
+    unix_client = aioredis.Redis(unix_socket_path=tmp_dir / "shared.sock", decode_responses=True)
+    admin_client = server.admin_client()
+    try:
+        assert await unix_client.ping() is True
+        assert await admin_client.ping() is True
+    finally:
+        await unix_client.aclose()
+        await admin_client.aclose()
+        server.stop()
+
+
+async def test_shared_read_buffer_accounting_1000_connections(df_factory):
+    """The aggregate read-buffer metric accounts for shared and direct client buffers."""
+    server = df_factory.create(
+        enable_resp_io_loop_v2="true",
+        enable_shared_read_buffer="true",
+        shared_read_buffer_len=1024,
+        proactor_threads=1,
+    )
+    server.start()
+    clients = [server.client() for _ in range(1000)]
+    try:
+        await asyncio.gather(*(client.ping() for client in clients))
+        info_bytes = int((await clients[0].info("clients"))["client_read_buffer_bytes"])
+        metrics = await server.metrics()
+        metric_bytes = next(
+            sample.value
+            for sample in metrics["dragonfly_memory_by_class_bytes"].samples
+            if sample.labels["class"] == "client_read_buffer"
+        )
+        # The /metrics request is itself a direct connection while the metric is serialized. Its
+        # minimum receive buffer is 256 bytes, but it is not present in the preceding INFO snapshot.
+        assert metric_bytes == info_bytes + 256
+        assert info_bytes >= 1024
+    finally:
+        await asyncio.gather(*(client.aclose() for client in clients))
+        server.stop()
 
 
 @dfly_multi_test_args(

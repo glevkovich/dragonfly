@@ -7,6 +7,8 @@
 #include <absl/strings/str_cat.h>
 #include <gmock/gmock.h>
 
+#include <random>
+
 #include "base/gtest.h"
 #include "base/logging.h"
 
@@ -134,6 +136,90 @@ TEST_F(RespSrvParserTest, Multi3) {
   ASSERT_EQ(RespSrvParser::OK, Parse("\r\n*3\r\n$3\r\nSET"));
   ASSERT_EQ(2, consumed_);
   EXPECT_THAT(Vec(), ElementsAre("SET", "key:000002273458", "VXK"));
+}
+
+TEST_F(RespSrvParserTest, ParsedArgsSurviveSourceBufferOverwrite) {
+  string request = "*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
+
+  ASSERT_EQ(RespSrvParser::OK, Parse(request));
+  ASSERT_EQ(request.size(), consumed_);
+  fill(request.begin(), request.end(), '\xCC');
+
+  EXPECT_THAT(Vec(), ElementsAre("SET", "key", "value"));
+}
+
+TEST_F(RespSrvParserTest, PendingFragmentsAreFullyConsumed) {
+  for (string_view fragment : {"*2\r\n", "$4\r\nECHO\r\n", "$5\r\nhe", "llo"}) {
+    ASSERT_EQ(RespSrvParser::INPUT_PENDING, Parse(fragment));
+    EXPECT_EQ(fragment.size(), consumed_);
+  }
+
+  ASSERT_EQ(RespSrvParser::OK, Parse("\r\n"));
+  EXPECT_EQ(2, consumed_);
+  EXPECT_THAT(Vec(), ElementsAre("ECHO", "hello"));
+}
+
+TEST(RespSrvParserSharedBufferTest, AlternatingParsersSurviveSourceBufferReuse) {
+  RespSrvParser first_parser, second_parser;
+  cmn::BackedArguments first_args, second_args;
+  uint32_t consumed = 0;
+  string shared_buffer;
+
+  auto parse = [&shared_buffer, &consumed](RespSrvParser* parser, cmn::BackedArguments* args,
+                                           string_view fragment) {
+    shared_buffer.assign(fragment);
+    RespSrvParser::Buffer buffer{reinterpret_cast<const uint8_t*>(shared_buffer.data()),
+                                 shared_buffer.size()};
+    auto result = parser->Parse(buffer, &consumed, args);
+    EXPECT_EQ(consumed, fragment.size());
+    return result;
+  };
+
+  EXPECT_EQ(parse(&first_parser, &first_args, "*2\r\n$4\r\nECHO\r\n$5\r\nhe"),
+            RespSrvParser::INPUT_PENDING);
+  EXPECT_EQ(parse(&second_parser, &second_args, "*2\r\n$4\r\nECHO\r\n$5\r\nwo"),
+            RespSrvParser::INPUT_PENDING);
+  EXPECT_EQ(parse(&first_parser, &first_args, "llo\r\n"), RespSrvParser::OK);
+  EXPECT_EQ(parse(&second_parser, &second_args, "rld\r\n"), RespSrvParser::OK);
+
+  ASSERT_EQ(first_args.size(), 2u);
+  ASSERT_EQ(second_args.size(), 2u);
+  EXPECT_EQ(first_args[0], "ECHO");
+  EXPECT_EQ(first_args[1], "hello");
+  EXPECT_EQ(second_args[0], "ECHO");
+  EXPECT_EQ(second_args[1], "world");
+}
+
+TEST(RespSrvParserSharedBufferTest, SeededFragmentationConsumesAndReassemblesCommands) {
+  mt19937 rng{0x5EED};
+
+  for (unsigned iteration = 0; iteration < 100; ++iteration) {
+    const string value = absl::StrCat("value-", iteration, "-", string(rng() % 256, 'x'));
+    const string request =
+        absl::StrCat("*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$", value.size(), "\r\n", value, "\r\n");
+    RespSrvParser parser;
+    cmn::BackedArguments args;
+    uint32_t consumed = 0;
+
+    for (size_t offset = 0; offset < request.size();) {
+      const size_t fragment_len = min<size_t>(1 + rng() % 31, request.size() - offset);
+      string fragment = request.substr(offset, fragment_len);
+      RespSrvParser::Buffer buffer{reinterpret_cast<const uint8_t*>(fragment.data()),
+                                   fragment.size()};
+      const auto result = parser.Parse(buffer, &consumed, &args);
+      EXPECT_EQ(consumed, fragment.size()) << "iteration=" << iteration;
+      offset += fragment_len;
+      if (offset < request.size())
+        EXPECT_EQ(result, RespSrvParser::INPUT_PENDING) << "iteration=" << iteration;
+      else
+        EXPECT_EQ(result, RespSrvParser::OK) << "iteration=" << iteration;
+    }
+
+    ASSERT_EQ(args.size(), 3u);
+    EXPECT_EQ(args[0], "SET");
+    EXPECT_EQ(args[1], "key");
+    EXPECT_EQ(args[2], value);
+  }
 }
 
 TEST_F(RespSrvParserTest, InvalidMult1) {

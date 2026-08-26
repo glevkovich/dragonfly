@@ -4,6 +4,52 @@ on:
   schedule:
     - cron: "0 0/3 * * *"
   workflow_dispatch:
+    inputs:
+      # Pytest inputs.
+      test-suites:
+        description: "Pytest: optional filenames; empty runs all Pytest suites. See .github/REGRESSION-TESTS.md. Example: connection_test,eval_test"
+        required: false
+        default: ""
+        type: string
+      test-cases:
+        description: "Pytest: optional node ID regex; See .github/REGRESSION-TESTS.md. Example: test_golang_asynq_script|test_shared_read_buffer_overflow_copy_metric"
+        required: false
+        default: ""
+        type: string
+      iterations:
+        description: "Pytest: optional number of iterations; See .github/REGRESSION-TESTS.md. Default: 1. Example: 12"
+        required: false
+        default: "1"
+        type: string
+
+      # GoogleTest inputs.
+      gtest-suites:
+        description: "GoogleTest: manual runs only; optional targets, empty runs every target. See .github/REGRESSION-TESTS.md. Example: dfly_core_test,redis_parser_test"
+        required: false
+        default: ""
+        type: string
+      gtest-cases:
+        description: "GoogleTest: optional --gtest_filter; See .github/REGRESSION-TESTS.md. Example: StringMapTest.*:DashTest.*"
+        required: false
+        default: ""
+        type: string
+      gtest-iterations:
+        description: "GoogleTest: optional number of iterations. See .github/REGRESSION-TESTS.md. Default: 1. Example: 12"
+        required: false
+        default: "1"
+        type: string
+
+      # Common inputs.
+      max-run-time:
+        description: "Common: combined time limit (minutes) for the build/Pytest/GoogleTest runs; Default: 360"
+        required: false
+        default: "360"
+        type: string
+      continue-on-test-failure:
+        description: "Common: failure handling for Pytest and GoogleTest; true completes iterations, archives failed Pytest logs, and deletes clean logs. See .github/REGRESSION-TESTS.md"
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   build:
@@ -17,6 +63,7 @@ jobs:
         runner: [ubuntu-latest, [self-hosted, linux, ARM64]]
 
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: "${{ fromJSON(github.event_name == 'workflow_dispatch' && '360' || '80') }}"
 
     permissions:
       id-token: write
@@ -34,6 +81,27 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: true
+
+      - name: Validate manual regression inputs
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: .github/scripts/run-regression-tests-helper.sh validate
+        env:
+          ITERATIONS_INPUT: ${{ inputs.iterations || '1' }}
+          TEST_SUITES_INPUT: ${{ inputs.test-suites || '' }}
+          TEST_CASES_INPUT: ${{ inputs.test-cases || '' }}
+          GTEST_SUITES_INPUT: ${{ inputs.gtest-suites || '' }}
+          GTEST_ITERATIONS_INPUT: ${{ inputs.gtest-iterations || '' }}
+          MAX_RUN_TIME_INPUT: ${{ inputs.max-run-time || '' }}
+          CONTINUE_ON_TEST_FAILURE_INPUT: ${{ inputs.continue-on-test-failure || 'false' }}
+
+      - name: Start shared regression time budget
+        shell: bash
+        env:
+          MAX_RUN_TIME_MINUTES: ${{ github.event_name == 'workflow_dispatch' && (inputs.max-run-time || '360') || '80' }}
+        run: |
+          echo "Shared regression time budget: ${MAX_RUN_TIME_MINUTES} minutes (build, Pytest, and GoogleTest)"
+          echo "REGRESSION_DEADLINE_EPOCH=$(( $(date +%s) + MAX_RUN_TIME_MINUTES * 60 ))" >> "$GITHUB_ENV"
 
       - name: Print environment info
         run: |
@@ -67,6 +135,14 @@ jobs:
           gspace-secret: ${{ secrets.GSPACES_BOT_DF_BUILD }}
           build-folder-name: build
           filter: ${{ matrix.build-type == 'Release' && 'not empty' || 'not opt_only' }}
+          test-suites: ${{ inputs.test-suites || '' }}
+          test-cases: ${{ inputs.test-cases || '' }}
+          iterations: ${{ inputs.iterations || '1' }}
+          max-run-time: ${{ github.event_name == 'workflow_dispatch' && (inputs.max-run-time || '360') || '80' }}
+          gtest-suites: ${{ inputs.gtest-suites || '' }}
+          gtest-cases: ${{ inputs.gtest-cases || '' }}
+          gtest-iterations: ${{ inputs.gtest-iterations || '' }}
+          continue-on-test-failure: ${{ inputs.continue-on-test-failure || 'false' }}
           s3-bucket: ${{ secrets.S3_REGTEST_BUCKET }}
           junit-s3-bucket: ${{ secrets.S3_REGTEST_BUCKET }}
           aws-role-to-assume: ${{ secrets.AWS_CI_S3_ROLE_ARN }}

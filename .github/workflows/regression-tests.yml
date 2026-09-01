@@ -155,8 +155,8 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: logs
-          path: /tmp/failed/*
+          name: regression-logs-${{ matrix.proactor }}-${{ matrix.build-type }}-${{ matrix.enable_resp_io_loop_v2 }}-${{ runner.arch }}
+          path: /tmp/regression-failed/*
 
   lint-test-chart:
     if: github.repository == 'dragonflydb/dragonfly'

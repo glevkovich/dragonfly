@@ -36,8 +36,8 @@ ArchiveAndCleanPytestLogs() {
   local log_root=/tmp/dragonfly_logs
 
   if [[ "${test_failed}" == true ]]; then
-    local archive_dir=/tmp/failed
-    local archive_path="${archive_dir}/iteration_${iteration}_logs.tar.zst"
+    local archive_dir=/tmp/regression-failed
+    local archive_path="${archive_dir}/iteration_${iteration}_logs.tar.gz"
     local start_seconds=$SECONDS
 
     mkdir -p "${archive_dir}"
@@ -51,7 +51,7 @@ ArchiveAndCleanPytestLogs() {
       return
     fi
     echo "Archiving Pytest logs from iteration ${iteration}: ${archive_path}"
-    if ! tar --use-compress-program='zstd -5 -T0' -cf "${archive_path}" -C /tmp dragonfly_logs; then
+    if ! tar -czf "${archive_path}" -C /tmp dragonfly_logs; then
       echo "Failed to archive Pytest logs from iteration ${iteration}"
       return 1
     fi
@@ -67,8 +67,8 @@ ArchiveAndCleanPytestLogs() {
 ValidateInputs() {
   ITERATIONS_INPUT=${ITERATIONS_INPUT:-1}
 
-  if ! [[ "${ITERATIONS_INPUT}" =~ ^[1-9][0-9]*$ ]]; then
-    echo "iterations must be a positive integer, got: ${ITERATIONS_INPUT}"
+  if ! [[ "${ITERATIONS_INPUT}" =~ ^[0-9]+$ ]]; then
+    echo "iterations must be a non-negative integer, got: ${ITERATIONS_INPUT}"
     exit 2
   fi
 
@@ -124,8 +124,15 @@ ValidateInputs() {
 
 RunPytests() {
   MAX_RUN_TIME_INPUT="${MAX_RUN_TIME_MINUTES}" ValidateInputs
+  if [[ "${ITERATIONS_INPUT}" -eq 0 ]]; then
+    echo "Pytest iterations set to 0; skipping Pytest"
+    return 0
+  fi
   max_run_time_minutes=${MAX_RUN_TIME_MINUTES}
   deadline_seconds=$(GetDeadlineSeconds "${max_run_time_minutes}")
+
+  rm -rf /tmp/regression-failed
+  mkdir -p /tmp/regression-failed
 
   ls -l "${GITHUB_WORKSPACE}/"
   cd "${GITHUB_WORKSPACE}/tests" || exit 2
@@ -214,8 +221,8 @@ RunPytests() {
       if [[ -f /tmp/last_test_log_dir.txt ]]; then
         while IFS= read -r log_dir; do
           if [[ -d "${log_dir}" ]]; then
-            mkdir -p /tmp/failed
-            mv "${log_dir}" /tmp/failed/
+            mkdir -p /tmp/regression-failed
+            mv "${log_dir}" /tmp/regression-failed/
           fi
         done </tmp/last_test_log_dir.txt
       fi

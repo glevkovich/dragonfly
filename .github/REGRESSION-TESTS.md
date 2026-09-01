@@ -21,9 +21,10 @@ The following names match the `workflow_dispatch` fields in the YAML exactly.
 - `test-cases`: An extended regular expression matched against collected pytest
   node IDs. Leave empty to run all cases in the selected suites. The same regex
   applies to every suite in `test-suites`; it is not a separate filter per file.
-- `iterations`: A positive integer controlling how many times the selected pytest
-  tests run. It defaults to `1` when left empty. The run count and `max-run-time`
-  are both limits: whichever occurs first ends the test family.
+- `iterations`: A non-negative integer controlling how many times the selected
+  pytest tests run. It defaults to `1` when left empty. Set it to `0` to skip
+  Pytest entirely, for a GoogleTest-only manual run. The run count and
+  `max-run-time` are both limits: whichever occurs first ends the test family.
 
 Examples:
 
@@ -93,11 +94,11 @@ run Pytest only and never build or run GoogleTests. The GoogleTest fields refine
 manual run; they do not enable it. A failure in one test family does not prevent the
 other family from running.
 
-Manual dispatches do not currently support running only one test family. Pytest always
-runs before GoogleTest, and both `iterations` and `gtest-iterations` must be positive
-integers: setting either value to `0` is rejected during input validation rather than
-skipping that family. To minimize Pytest work before a targeted GoogleTest run, select
-a single fast Pytest case. Scheduled runs are Pytest-only and do not run GoogleTests.
+Manual dispatches support GoogleTest-only runs by setting `iterations` to `0`.
+Pytest still runs before GoogleTest when it is enabled, and `gtest-iterations` must
+be positive. To minimize Pytest work when it is enabled before a targeted GoogleTest
+run, select a single fast Pytest case. Scheduled runs are Pytest-only and do not run
+GoogleTests.
 
 - `gtest-suites`: Comma- or space-separated target names discovered under
   `src/core`, `src/facade`, and `src/server`. You may also provide a target path or
@@ -155,24 +156,16 @@ StringMapTest.*:DashTest.*
   failure at the end. The two family steps are independent: a failure in one never
   prevents the other from starting. With `true`, each completed Pytest iteration is
   handled before the next begins. Every failed iteration archives all
-  `/tmp/dragonfly_logs/` contents as `/tmp/failed/iteration_<n>_logs.tar.zst` using
-  Zstandard level 5. Clean iterations are not archived or retained: their logs are
+  `/tmp/dragonfly_logs/` contents as
+  `/tmp/regression-failed/iteration_<n>_logs.tar.gz` using gzip. Clean iterations are not archived or retained: their logs are
   deleted. Archive creation finishes before the next iteration starts, and its
   duration is printed in the job log.
 
-  The `logs` artifact contains failed-iteration archives at its root and a
-  `pytest-failures-by-iteration.txt` report listing the failed test cases for each
-  failed Pytest iteration. To inspect an archive after downloading the artifact,
-  run this repository helper from the directory containing the archive:
-
-  ```bash
-  bash .github/scripts/open-regression-iteration-logs.sh ITERATION
-  ```
-
-  For example, `bash .github/scripts/open-regression-iteration-logs.sh 3` extracts
-  `iteration_3_logs.tar.zst` to `iteration_3_logs/`. The helper requires one positive
-  iteration number, supports `--help`, and exits without overwriting an existing
-  extraction directory.
+  Each failed matrix job uploads a separately named `regression-logs-*` artifact
+  containing failed-iteration archives at its root and a
+  `pytest-failures-by-iteration.txt` report listing the failed test cases for every
+  failed Pytest iteration. The archives are standard gzip tar files and can be
+  inspected with local archive tools after downloading the artifact.
 
 `max-run-time`:
 

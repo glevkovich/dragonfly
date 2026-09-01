@@ -100,6 +100,11 @@ inputs:
     default: "false"
     type: string
     description: "When true, both test families continue selected iterations after failures and fail after all runs complete"
+  test-only-failure-iterations:
+    required: false
+    default: ""
+    type: string
+    description: "Comma-separated iteration numbers that intentionally fail regression-test validation"
   # End manual trigger inputs.
 
 runs:
@@ -181,6 +186,7 @@ runs:
         ITERATIONS_INPUT: ${{ inputs.iterations }}
         MAX_RUN_TIME_MINUTES: ${{ inputs.max-run-time }}
         CONTINUE_ON_TEST_FAILURE_INPUT: ${{ inputs.continue-on-test-failure }}
+        REGRESSION_TEST_FAILURE_ITERATIONS: ${{ inputs.test-only-failure-iterations }}
         # Add environment variables to enable the S3 snapshot test.
         # AWS credentials: if inputs provided, use them; otherwise rely on workflow OIDC auth
         DRAGONFLY_S3_BUCKET: ${{ inputs.s3-bucket }}
@@ -203,6 +209,7 @@ runs:
         GTEST_ITERATIONS_INPUT: ${{ inputs.gtest-iterations }}
         MAX_RUN_TIME_MINUTES: ${{ inputs.max-run-time }}
         CONTINUE_ON_TEST_FAILURE_INPUT: ${{ inputs.continue-on-test-failure }}
+        REGRESSION_GTEST_FAILURE_ITERATIONS: ${{ inputs.test-only-failure-iterations }}
 
     - name: Upload regression JUnit results
       if: always()

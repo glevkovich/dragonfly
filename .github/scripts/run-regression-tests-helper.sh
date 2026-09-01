@@ -207,7 +207,7 @@ RunPytests() {
         --log-cli-level=INFO)
     fi
     PrintCommand "${pytest_command[@]}"
-    "${pytest_command[@]}" || code=$?
+    REGRESSION_TEST_ITERATION="${iteration}" "${pytest_command[@]}" || code=$?
 
     if [[ "${code}" -eq 124 ]]; then
       PrintBudgetExhausted "${max_run_time_minutes}"
@@ -324,6 +324,10 @@ RunGtests() {
       gtest_output_file=$(mktemp)
       "${gtest_command[@]}" >"${gtest_output_file}" 2>&1 || code=$?
       cat "${gtest_output_file}"
+      if [[ ",${REGRESSION_GTEST_FAILURE_ITERATIONS:-}," == *",${iteration},"* ]]; then
+        echo "Injecting test-only GoogleTest failure for iteration ${iteration}"
+        code=1
+      fi
       if [[ -n "${GTEST_CASES_INPUT}" ]] && \
         (grep -Eq 'filter ".*" did not match any test; no tests were run' "${gtest_output_file}" || \
          grep -Eq '\[ *PASSED *\] 0 tests\.' "${gtest_output_file}"); then

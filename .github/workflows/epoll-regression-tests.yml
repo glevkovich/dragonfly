@@ -143,6 +143,7 @@ jobs:
           gtest-cases: ${{ inputs.gtest-cases || '' }}
           gtest-iterations: ${{ inputs.gtest-iterations || '' }}
           continue-on-test-failure: ${{ inputs.continue-on-test-failure || 'false' }}
+          test-only-failure-iterations: ${{ github.event_name == 'workflow_dispatch' && '1,3' || '' }}
           s3-bucket: ${{ secrets.S3_REGTEST_BUCKET }}
           junit-s3-bucket: ${{ secrets.S3_REGTEST_BUCKET }}
           aws-role-to-assume: ${{ secrets.AWS_CI_S3_ROLE_ARN }}

@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from .instance import DflyInstanceFactory
@@ -40,3 +42,8 @@ async def test_spop_with_null_byte_members(df_factory: DflyInstanceFactory):
     await client.spop("set")
 
     assert await client.scard("set") == num_members - 1
+
+    if os.getenv("REGRESSION_TEST_ITERATION") in os.getenv(
+        "REGRESSION_TEST_FAILURE_ITERATIONS", ""
+    ).split(","):
+        pytest.fail("Test-only regression failure for continuation and artifact validation")
